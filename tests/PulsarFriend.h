@@ -21,23 +21,25 @@
 
 #include <string>
 
+#include "WaitUtils.h"
 #include "lib/ClientConnection.h"
 #include "lib/ClientImpl.h"
 #include "lib/ConsumerConfigurationImpl.h"
 #include "lib/ConsumerImpl.h"
+#include "lib/LookupService.h"
 #include "lib/MessageImpl.h"
 #include "lib/MultiTopicsConsumerImpl.h"
 #include "lib/NamespaceName.h"
 #include "lib/PartitionedProducerImpl.h"
 #include "lib/ProducerImpl.h"
 #include "lib/ReaderImpl.h"
-#include "lib/RetryableLookupService.h"
 #include "lib/stats/ConsumerStatsImpl.h"
 #include "lib/stats/ProducerStatsImpl.h"
 
 using std::string;
 
 namespace pulsar {
+using ClientConnectionWeakPtr = std::weak_ptr<ClientConnection>;
 class PulsarFriend {
    public:
     static ProducerStatsImplPtr getProducerStatsPtr(Producer producer) {
@@ -78,6 +80,12 @@ class PulsarFriend {
     static ProducerImpl& getProducerImpl(Producer producer) {
         ProducerImpl* producerImpl = static_cast<ProducerImpl*>(producer.impl_.get());
         return *producerImpl;
+    }
+
+    static int getPartitionProducerSize(Producer producer) {
+        PartitionedProducerImpl* partitionedProducerImpl =
+            static_cast<PartitionedProducerImpl*>(producer.impl_.get());
+        return partitionedProducerImpl->producers_.size();
     }
 
     static ProducerImpl& getInternalProducerImpl(Producer producer, int index) {
@@ -127,15 +135,14 @@ class PulsarFriend {
     static std::vector<ClientConnectionPtr> getConnections(const Client& client) {
         auto& pool = client.impl_->pool_;
         std::vector<ClientConnectionPtr> connections;
-        std::lock_guard<std::mutex> lock(pool.mutex_);
+        std::lock_guard<std::recursive_mutex> lock(pool.mutex_);
         for (const auto& kv : pool.pool_) {
-            auto cnx = kv.second.lock();
-            if (cnx) {
-                connections.emplace_back(cnx);
-            }
+            connections.emplace_back(kv.second);
         }
         return connections;
     }
+
+    static ExecutorServicePtr getExecutor(const ClientConnection& cnx) { return cnx.executor_; }
 
     static std::vector<ProducerImplPtr> getProducers(const ClientConnection& cnx) {
         std::vector<ProducerImplPtr> producers;
@@ -161,22 +168,26 @@ class PulsarFriend {
 
     static ClientConnectionWeakPtr getClientConnection(HandlerBase& handler) { return handler.connection_; }
 
+    static std::string getConnectionPhysicalAddress(HandlerBase& handler) {
+        auto cnx = handler.getCnx().lock();
+        if (cnx) {
+            return cnx->physicalAddress_;
+        }
+        return "";
+    }
+
     static void setClientConnection(HandlerBase& handler, ClientConnectionWeakPtr conn) {
         handler.connection_ = conn;
     }
 
-    static boost::posix_time::ptime& getFirstBackoffTime(Backoff& backoff) {
+    static auto getFirstBackoffTime(Backoff& backoff) -> decltype(backoff.firstBackoffTime_)& {
         return backoff.firstBackoffTime_;
     }
 
     static void setServiceUrlIndex(ServiceNameResolver& resolver, size_t index) { resolver.index_ = index; }
 
     static void setServiceUrlIndex(const Client& client, size_t index) {
-        setServiceUrlIndex(client.impl_->serviceNameResolver_, index);
-    }
-
-    static size_t getNumberOfPendingTasks(const RetryableLookupService& lookupService) {
-        return lookupService.backoffTimers_.size();
+        setServiceUrlIndex(client.impl_->lookupServicePtr_->getServiceNameResolver(), index);
     }
 
     static proto::MessageMetadata& getMessageMetadata(Message& message) { return message.impl_->metadata; }
@@ -198,6 +209,13 @@ class PulsarFriend {
         LookupDataResultPtr lookupData = std::make_shared<LookupDataResult>();
         lookupData->setPartitions(newPartitions);
         partitionedProducer.handleGetPartitions(ResultOk, lookupData);
+    }
+
+    static bool reconnect(Producer producer) {
+        auto producerImpl = std::dynamic_pointer_cast<ProducerImpl>(producer.impl_);
+        producerImpl->disconnectProducer();
+        return waitUntil(std::chrono::seconds(3),
+                         [producerImpl] { return !producerImpl->getCnx().expired(); });
     }
 };
 }  // namespace pulsar

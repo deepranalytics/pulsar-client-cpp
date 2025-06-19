@@ -18,12 +18,13 @@
  */
 #ifndef LIB_UNACKEDMESSAGETRACKERENABLED_H_
 #define LIB_UNACKEDMESSAGETRACKERENABLED_H_
-#include <boost/asio/deadline_timer.hpp>
 #include <deque>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <set>
 
+#include "AsioTimer.h"
 #include "TestUtil.h"
 #include "UnAckedMessageTrackerInterface.h"
 
@@ -32,21 +33,23 @@ namespace pulsar {
 class ClientImpl;
 class ConsumerImplBase;
 using ClientImplPtr = std::shared_ptr<ClientImpl>;
-using DeadlineTimerPtr = std::shared_ptr<boost::asio::deadline_timer>;
+using ClientImplWeakPtr = std::weak_ptr<ClientImpl>;
 
-class UnAckedMessageTrackerEnabled : public UnAckedMessageTrackerInterface {
+class UnAckedMessageTrackerEnabled : public std::enable_shared_from_this<UnAckedMessageTrackerEnabled>,
+                                     public UnAckedMessageTrackerInterface {
    public:
-    ~UnAckedMessageTrackerEnabled();
-    UnAckedMessageTrackerEnabled(long timeoutMs, ClientImplPtr, ConsumerImplBase&);
-    UnAckedMessageTrackerEnabled(long timeoutMs, long tickDuration, ClientImplPtr, ConsumerImplBase&);
-    bool add(const MessageId& msgId);
-    bool remove(const MessageId& msgId);
-    void remove(const MessageIdList& msgIds);
-    void removeMessagesTill(const MessageId& msgId);
-    void removeTopicMessage(const std::string& topic);
+    UnAckedMessageTrackerEnabled(long timeoutMs, const ClientImplPtr&, ConsumerImplBase&);
+    UnAckedMessageTrackerEnabled(long timeoutMs, long tickDuration, const ClientImplPtr&, ConsumerImplBase&);
+    void start() override;
+    void stop() override;
+    bool add(const MessageId& msgId) override;
+    bool remove(const MessageId& msgId) override;
+    void remove(const MessageIdList& msgIds) override;
+    void removeMessagesTill(const MessageId& msgId) override;
+    void removeTopicMessage(const std::string& topic) override;
     void timeoutHandler();
 
-    void clear();
+    void clear() override;
 
    protected:
     void timeoutHandlerHelper();
@@ -56,7 +59,7 @@ class UnAckedMessageTrackerEnabled : public UnAckedMessageTrackerInterface {
     std::deque<std::set<MessageId>> timePartitions;
     std::recursive_mutex lock_;
     ConsumerImplBase& consumerReference_;
-    ClientImplPtr client_;
+    ClientImplWeakPtr client_;
     DeadlineTimerPtr timer_;  // DO NOT place this before client_!
     long timeoutMs_;
     long tickDurationInMs_;
@@ -65,6 +68,7 @@ class UnAckedMessageTrackerEnabled : public UnAckedMessageTrackerInterface {
     FRIEND_TEST(ConsumerTest, testMultiTopicsConsumerUnAckedMessageRedelivery);
     FRIEND_TEST(ConsumerTest, testBatchUnAckedMessageTracker);
     FRIEND_TEST(ConsumerTest, testAcknowledgeCumulativeWithPartition);
+    FRIEND_TEST(ConsumerTest, testMultiConsumerListenerAndAck);
 };
 }  // namespace pulsar
 

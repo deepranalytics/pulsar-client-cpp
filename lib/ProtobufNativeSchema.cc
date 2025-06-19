@@ -20,10 +20,10 @@
 
 #include <google/protobuf/descriptor.pb.h>
 
-#include <boost/archive/iterators/base64_from_binary.hpp>
-#include <boost/archive/iterators/transform_width.hpp>
 #include <stdexcept>
 #include <vector>
+
+#include "Base64Utils.h"
 
 using google::protobuf::FileDescriptor;
 using google::protobuf::FileDescriptorSet;
@@ -39,32 +39,16 @@ SchemaInfo createProtobufNativeSchema(const google::protobuf::Descriptor* descri
     }
 
     const auto fileDescriptor = descriptor->file();
-    const std::string rootMessageTypeName = descriptor->full_name();
-    const std::string rootFileDescriptorName = fileDescriptor->name();
+    const std::string& rootMessageTypeName = descriptor->full_name();
+    const std::string& rootFileDescriptorName = fileDescriptor->name();
 
     FileDescriptorSet fileDescriptorSet;
     internalCollectFileDescriptors(fileDescriptor, fileDescriptorSet);
 
-    using namespace boost::archive::iterators;
-    using base64 = base64_from_binary<transform_width<const char*, 6, 8>>;
-
     std::vector<char> bytes(fileDescriptorSet.ByteSizeLong());
     fileDescriptorSet.SerializeToArray(bytes.data(), bytes.size());
 
-    std::string base64String{base64(bytes.data()), base64(bytes.data() + bytes.size())};
-    // Pulsar broker only supports decoding Base64 with padding so we need to add padding '=' here
-    const size_t numPadding = 4 - base64String.size() % 4;
-    if (numPadding <= 2) {
-        for (size_t i = 0; i < numPadding; i++) {
-            base64String.push_back('=');
-        }
-    } else if (numPadding == 3) {
-        // The length of encoded Base64 string (without padding) should not be 4N+1
-        throw std::runtime_error("Unexpected padding number (3), the encoded Base64 string is:\n" +
-                                 base64String);
-    }  // else numPadding == 4, which means no padding characters need to be added
-
-    const std::string schemaJson = R"({"fileDescriptorSet":")" + base64String +
+    const std::string schemaJson = R"({"fileDescriptorSet":")" + base64::encode(bytes) +
                                    R"(","rootMessageTypeName":")" + rootMessageTypeName +
                                    R"(","rootFileDescriptorName":")" + rootFileDescriptorName + R"("})";
 

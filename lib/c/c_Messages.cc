@@ -16,24 +16,14 @@
  * specific language governing permissions and limitations
  * under the License.
  */
+#include <pulsar/c/messages.h>
 
-#pragma once
+#include "lib/c/c_structs.h"
 
-#include <pulsar/Logger.h>
-#include <pulsar/defines.h>
+size_t pulsar_messages_size(pulsar_messages_t* msgs) { return msgs->messages.size(); }
 
-#ifdef USE_LOG4CXX
+pulsar_message_t* pulsar_messages_get(pulsar_messages_t* msgs, size_t index) {
+    return &msgs->messages[index];
+}
 
-namespace pulsar {
-
-class PULSAR_PUBLIC Log4CxxLoggerFactory : public LoggerFactory {
-   public:
-    static std::unique_ptr<LoggerFactory> create();
-    static std::unique_ptr<LoggerFactory> create(const std::string& log4cxxConfFile);
-
-    Logger* getLogger(const std::string& fileName);
-};
-
-}  // namespace pulsar
-
-#endif
+void pulsar_messages_free(pulsar_messages_t* msgs) { delete msgs; }

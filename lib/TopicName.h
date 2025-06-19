@@ -65,8 +65,10 @@ class PULSAR_PUBLIC TopicName : public ServiceUnitId {
     NamespaceNamePtr getNamespaceName();
     int getPartitionIndex() const noexcept { return partition_; }
     static std::shared_ptr<TopicName> get(const std::string& topicName);
-    bool operator==(const TopicName& other);
+    bool operator==(const TopicName& other) const;
     static std::string getEncodedName(const std::string& nameBeforeEncoding);
+    static std::string removeDomain(const std::string& topicName);
+    static bool containsDomain(const std::string& topicName);
     std::string getTopicPartitionName(unsigned int partition) const;
     static int getPartitionIndex(const std::string& topic);
 

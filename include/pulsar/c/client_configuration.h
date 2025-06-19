@@ -160,6 +160,18 @@ PULSAR_PUBLIC const char *pulsar_client_configuration_get_tls_trust_certs_file_p
 PULSAR_PUBLIC void pulsar_client_configuration_set_tls_allow_insecure_connection(
     pulsar_client_configuration_t *conf, int allowInsecure);
 
+PULSAR_PUBLIC void pulsar_client_configuration_set_tls_private_key_file_path(
+    pulsar_client_configuration_t *conf, const char *private_key_file_path);
+
+PULSAR_PUBLIC const char *pulsar_client_configuration_get_tls_private_key_file_path(
+    pulsar_client_configuration_t *conf);
+
+PULSAR_PUBLIC void pulsar_client_configuration_set_tls_certificate_file_path(
+    pulsar_client_configuration_t *conf, const char *certificateFilePath);
+
+PULSAR_PUBLIC const char *pulsar_client_configuration_get_tls_certificate_file_path(
+    pulsar_client_configuration_t *conf);
+
 PULSAR_PUBLIC int pulsar_client_configuration_is_tls_allow_insecure_connection(
     pulsar_client_configuration_t *conf);
 
@@ -175,10 +187,27 @@ PULSAR_PUBLIC int pulsar_client_configuration_is_validate_hostname(pulsar_client
 PULSAR_PUBLIC void pulsar_client_configuration_set_validate_hostname(pulsar_client_configuration_t *conf,
                                                                      int validateHostName);
 
+PULSAR_PUBLIC void pulsar_client_configuration_set_listener_name(pulsar_client_configuration_t *conf,
+                                                                 const char *listenerName);
+
+PULSAR_PUBLIC const char *pulsar_client_configuration_get_listener_name(pulsar_client_configuration_t *conf);
+
+PULSAR_PUBLIC void pulsar_client_configuration_set_partitions_update_interval(
+    pulsar_client_configuration_t *conf, const unsigned int intervalInSeconds);
+
+PULSAR_PUBLIC unsigned int pulsar_client_configuration_get_partitions_update_interval(
+    pulsar_client_configuration_t *conf);
+
 /*
  * Get the stats interval set in the client.
  */
-PULSAR_PUBLIC const unsigned int pulsar_client_configuration_get_stats_interval_in_seconds(
+PULSAR_PUBLIC unsigned int pulsar_client_configuration_get_stats_interval_in_seconds(
+    pulsar_client_configuration_t *conf);
+
+PULSAR_PUBLIC void pulsar_client_configuration_set_keep_alive_interval_in_seconds(
+    pulsar_client_configuration_t *conf, unsigned int keepAliveIntervalInSeconds);
+
+PULSAR_PUBLIC unsigned int pulsar_client_configuration_get_keep_alive_interval_in_seconds(
     pulsar_client_configuration_t *conf);
 
 #ifdef __cplusplus

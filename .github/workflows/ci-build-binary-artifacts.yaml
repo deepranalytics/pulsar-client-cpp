@@ -76,7 +76,7 @@ jobs:
         run: zip -r ${{matrix.pkg.type}}-${{matrix.cpu.platform}}.zip ${{matrix.pkg.path}}
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@master
         with:
           name: ${{matrix.pkg.type}}-${{matrix.cpu.platform}}
           path: ${{matrix.pkg.path}}
@@ -148,6 +148,7 @@ jobs:
           mkdir -p $BUILD_DIR
           cmake -B $BUILD_DIR \
             -G "${{ matrix.generator }}" ${{ matrix.arch }} \
+            -DUSE_ASIO=ON \
             -DBUILD_TESTS=OFF \
             -DVCPKG_TRIPLET=${{ matrix.triplet }} \
             -DCMAKE_INSTALL_PREFIX=${{ env.INSTALL_DIR }} \
@@ -161,7 +162,7 @@ jobs:
         run: 7z a -tzip pulsar-client-cpp-${{ matrix.triplet }}.zip ${{ env.INSTALL_DIR }}/*
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@master
         with:
           name: ${{ matrix.triplet }}
           path: ${{ env.INSTALL_DIR }}
@@ -174,6 +175,7 @@ jobs:
           mkdir -p $BUILD_DIR
           cmake -B $BUILD_DIR \
             -G "${{ matrix.generator }}" ${{ matrix.arch }} \
+            -DUSE_ASIO=ON \
             -DBUILD_TESTS=OFF \
             -DVCPKG_TRIPLET=${{ matrix.triplet }} \
             -DCMAKE_INSTALL_PREFIX=$INSTALL_DIR_DEBUG \
@@ -188,7 +190,41 @@ jobs:
         run: 7z a -tzip pulsar-client-cpp-${{ matrix.triplet }}-Debug.zip ${{ env.INSTALL_DIR }}-Debug/*
 
       - name: Upload artifacts (Debug)
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@master
         with:
           name: ${{ matrix.triplet }}-Debug
           path: ${{ env.INSTALL_DIR }}-Debug
+
+  package-macos:
+    name: Build macOS libraries
+    runs-on: macos-14
+    timeout-minutes: 500
+
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86_64, arm64]
+
+    steps:
+      - name: checkout
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Install dependencies
+        run: |
+          export ARCH=${{ matrix.arch }}
+          ./pkg/mac/build-static-library.sh
+
+      - name: Zip artifact
+        run: |
+          cd ./pkg/mac/.install
+          zip -r macos-${{ matrix.arch }}.zip ./include/pulsar/* ./lib/*
+          cp macos-${{ matrix.arch }}.zip ../../../
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@master
+        with:
+          name: macos-${{ matrix.arch }}.zip
+          path: macos-${{ matrix.arch }}.zip

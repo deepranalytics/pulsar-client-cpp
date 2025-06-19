@@ -16,7 +16,11 @@
  * specific language governing permissions and limitations
  * under the License.
  */
+#include <chrono>
+#include <stdexcept>
+
 #include "ClientConfigurationImpl.h"
+#include "auth/AuthOauth2.h"
 
 namespace pulsar {
 
@@ -38,6 +42,16 @@ ClientConfiguration& ClientConfiguration::setMemoryLimit(uint64_t memoryLimitByt
 
 uint64_t ClientConfiguration::getMemoryLimit() const { return impl_->memoryLimit; }
 
+ClientConfiguration& ClientConfiguration::setConnectionsPerBroker(int connectionsPerBroker) {
+    if (connectionsPerBroker <= 0) {
+        throw std::invalid_argument("connectionsPerBroker should be greater than 0");
+    }
+    impl_->connectionsPerBroker = connectionsPerBroker;
+    return *this;
+}
+
+int ClientConfiguration::getConnectionsPerBroker() const { return impl_->connectionsPerBroker; }
+
 ClientConfiguration& ClientConfiguration::setAuth(const AuthenticationPtr& authentication) {
     impl_->authenticationPtr = authentication;
     return *this;
@@ -48,11 +62,13 @@ Authentication& ClientConfiguration::getAuth() const { return *impl_->authentica
 const AuthenticationPtr& ClientConfiguration::getAuthPtr() const { return impl_->authenticationPtr; }
 
 ClientConfiguration& ClientConfiguration::setOperationTimeoutSeconds(int timeout) {
-    impl_->operationTimeoutSeconds = timeout;
+    impl_->operationTimeout = std::chrono::seconds(timeout);
     return *this;
 }
 
-int ClientConfiguration::getOperationTimeoutSeconds() const { return impl_->operationTimeoutSeconds; }
+int ClientConfiguration::getOperationTimeoutSeconds() const {
+    return std::chrono::duration_cast<std::chrono::seconds>(impl_->operationTimeout).count();
+}
 
 ClientConfiguration& ClientConfiguration::setIOThreads(int threads) {
     impl_->ioThreads = threads;
@@ -121,6 +137,22 @@ ClientConfiguration& ClientConfiguration::setConcurrentLookupRequest(int concurr
     return *this;
 }
 
+ClientConfiguration& ClientConfiguration::setProxyServiceUrl(const std::string& proxyServiceUrl) {
+    impl_->proxyServiceUrl = proxyServiceUrl;
+    return *this;
+}
+
+const std::string& ClientConfiguration::getProxyServiceUrl() const { return impl_->proxyServiceUrl; }
+
+ClientConfiguration& ClientConfiguration::setProxyProtocol(ClientConfiguration::ProxyProtocol proxyProtocol) {
+    impl_->proxyProtocol = proxyProtocol;
+    return *this;
+}
+
+ClientConfiguration::ProxyProtocol ClientConfiguration::getProxyProtocol() const {
+    return impl_->proxyProtocol;
+}
+
 int ClientConfiguration::getConcurrentLookupRequest() const { return impl_->concurrentLookupRequest; }
 
 ClientConfiguration& ClientConfiguration::setMaxLookupRedirects(int maxLookupRedirects) {
@@ -143,13 +175,6 @@ ClientConfiguration& ClientConfiguration::setMaxBackoffIntervalMs(int maxBackoff
 }
 
 int ClientConfiguration::getMaxBackoffIntervalMs() const { return impl_->maxBackoffIntervalMs; }
-
-ClientConfiguration& ClientConfiguration::setLogConfFilePath(const std::string& logConfFilePath) {
-    impl_->logConfFilePath = logConfFilePath;
-    return *this;
-}
-
-const std::string& ClientConfiguration::getLogConfFilePath() const { return impl_->logConfFilePath; }
 
 ClientConfiguration& ClientConfiguration::setLogger(LoggerFactory* loggerFactory) {
     impl_->loggerFactory.reset(loggerFactory);
@@ -188,5 +213,25 @@ ClientConfiguration& ClientConfiguration::setConnectionTimeout(int timeoutMs) {
 }
 
 int ClientConfiguration::getConnectionTimeout() const { return impl_->connectionTimeoutMs; }
+
+ClientConfiguration& ClientConfiguration::setKeepAliveIntervalInSeconds(
+    unsigned int keepAliveIntervalInSeconds) {
+    impl_->keepAliveIntervalInSeconds = keepAliveIntervalInSeconds;
+    return *this;
+}
+
+unsigned int ClientConfiguration::getKeepAliveIntervalInSeconds() const {
+    return impl_->keepAliveIntervalInSeconds;
+}
+
+ClientConfiguration& ClientConfiguration::setDescription(const std::string& description) {
+    if (description.length() > 64) {
+        throw std::invalid_argument("The description length exceeds 64");
+    }
+    impl_->description = description;
+    return *this;
+}
+
+const std::string& ClientConfiguration::getDescription() const noexcept { return impl_->description; }
 
 }  // namespace pulsar

@@ -23,6 +23,7 @@
 
 #include <iostream>
 
+#include "Int64SerDes.h"
 #include "KeyValueImpl.h"
 #include "MessageImpl.h"
 #include "PulsarApi.pb.h"
@@ -69,21 +70,25 @@ Message::Message() : impl_() {}
 
 Message::Message(MessageImplPtr& impl) : impl_(impl) {}
 
-Message::Message(const MessageId& messageId, proto::MessageMetadata& metadata, SharedBuffer& payload)
+Message::Message(const MessageId& messageId, proto::BrokerEntryMetadata& brokerEntryMetadata,
+                 proto::MessageMetadata& metadata, SharedBuffer& payload)
     : impl_(std::make_shared<MessageImpl>()) {
     impl_->messageId = messageId;
+    impl_->brokerEntryMetadata = brokerEntryMetadata;
     impl_->metadata = metadata;
     impl_->payload = payload;
 }
 
-Message::Message(const MessageId& messageID, proto::MessageMetadata& metadata, SharedBuffer& payload,
-                 proto::SingleMessageMetadata& singleMetadata, const std::string& topicName)
+Message::Message(const MessageId& messageID, proto::BrokerEntryMetadata& brokerEntryMetadata,
+                 proto::MessageMetadata& metadata, SharedBuffer& payload,
+                 proto::SingleMessageMetadata& singleMetadata, const std::shared_ptr<std::string>& topicName)
     : impl_(std::make_shared<MessageImpl>()) {
     impl_->messageId = messageID;
+    impl_->brokerEntryMetadata = brokerEntryMetadata;
     impl_->metadata = metadata;
     impl_->payload = payload;
     impl_->metadata.mutable_properties()->CopyFrom(singleMetadata.properties());
-    impl_->topicName_ = &topicName;
+    impl_->topicName_ = topicName;
 
     impl_->metadata.clear_properties();
     if (singleMetadata.properties_size() > 0) {
@@ -135,6 +140,15 @@ void Message::setMessageId(const MessageId& messageID) const {
     return;
 }
 
+int64_t Message::getIndex() const {
+    if (!impl_ || !impl_->brokerEntryMetadata.has_index()) {
+        return -1;
+    } else {
+        // casting uint64_t to int64_t, server definition ensures that's safe
+        return static_cast<int64_t>(impl_->brokerEntryMetadata.index());
+    }
+}
+
 bool Message::hasPartitionKey() const {
     if (impl_) {
         return impl_->hasPartitionKey();
@@ -170,7 +184,7 @@ const std::string& Message::getTopicName() const {
     return impl_->getTopicName();
 }
 
-const int Message::getRedeliveryCount() const {
+int Message::getRedeliveryCount() const {
     if (!impl_) {
         return 0;
     }
@@ -182,6 +196,10 @@ bool Message::hasSchemaVersion() const {
         return impl_->hasSchemaVersion();
     }
     return false;
+}
+
+int64_t Message::getLongSchemaVersion() const {
+    return (impl_ && impl_->hasSchemaVersion()) ? fromBigEndianBytes(impl_->getSchemaVersion()) : -1L;
 }
 
 const std::string& Message::getSchemaVersion() const {

@@ -22,13 +22,14 @@
 #include <pulsar/Result.h>
 #include <pulsar/Schema.h>
 
-#include <boost/optional.hpp>
 #include <memory>
 #include <ostream>
 #include <vector>
 
 #include "Future.h"
 #include "LookupDataResult.h"
+#include "ProtoApiEnums.h"
+#include "ServiceNameResolver.h"
 
 namespace pulsar {
 using NamespaceTopicsPtr = std::shared_ptr<std::vector<std::string>>;
@@ -42,6 +43,7 @@ class LookupService {
     struct LookupResult {
         std::string logicalAddress;
         std::string physicalAddress;
+        bool proxyThroughServiceUrl;
 
         friend std::ostream& operator<<(std::ostream& os, const LookupResult& lookupResult) {
             return os << "logical address: " << lookupResult.logicalAddress
@@ -72,17 +74,24 @@ class LookupService {
      *
      * Returns all the topics name for a given namespace.
      */
-    virtual Future<Result, NamespaceTopicsPtr> getTopicsOfNamespaceAsync(const NamespaceNamePtr& nsName) = 0;
+    virtual Future<Result, NamespaceTopicsPtr> getTopicsOfNamespaceAsync(
+        const NamespaceNamePtr& nsName, CommandGetTopicsOfNamespace_Mode mode) = 0;
 
     /**
-     * returns current SchemaInfo {@link SchemaInfo} for a given topic.
+     * Get the SchemaInfo for a given topic and a specific schema version.
      *
      * @param topicName topic-name
+     * @param version the schema version byte array, if it's empty, use the latest version
      * @return SchemaInfo
      */
-    virtual Future<Result, boost::optional<SchemaInfo>> getSchema(const TopicNamePtr& topicName) = 0;
+    virtual Future<Result, SchemaInfo> getSchema(const TopicNamePtr& topicName,
+                                                 const std::string& version = "") = 0;
+
+    virtual ServiceNameResolver& getServiceNameResolver() = 0;
 
     virtual ~LookupService() {}
+
+    virtual void close() {}
 };
 
 typedef std::shared_ptr<LookupService> LookupServicePtr;

@@ -40,6 +40,7 @@ using BatchMessageAckerPtr = std::shared_ptr<BatchMessageAcker>;
 class MessageIdImpl;
 using MessageIdImplPtr = std::shared_ptr<MessageIdImpl>;
 class BitSet;
+struct SendArguments;
 
 namespace proto {
 class BaseCommand;
@@ -79,10 +80,14 @@ class Commands {
     };
 
     const static uint16_t magicCrc32c = 0x0e01;
+
+    const static uint16_t magicBrokerEntryMetadata = 0x0e02;
+
     const static int checksumSize = 4;
 
     static SharedBuffer newConnect(const AuthenticationPtr& authentication, const std::string& logicalAddress,
-                                   bool connectingThroughProxy, Result& result);
+                                   bool connectingThroughProxy, const std::string& clientVersion,
+                                   Result& result);
 
     static SharedBuffer newAuthResponse(const AuthenticationPtr& authentication, Result& result);
 
@@ -91,11 +96,11 @@ class Commands {
     static SharedBuffer newLookup(const std::string& topic, const bool authoritative, uint64_t requestId,
                                   const std::string& listenerName);
 
-    static SharedBuffer newGetSchema(const std::string& topic, uint64_t requestId);
+    static SharedBuffer newGetSchema(const std::string& topic, const std::string& version,
+                                     uint64_t requestId);
 
-    static PairSharedBuffer newSend(SharedBuffer& headers, proto::BaseCommand& cmd, uint64_t producerId,
-                                    uint64_t sequenceId, ChecksumType checksumType,
-                                    const proto::MessageMetadata& metadata, const SharedBuffer& payload);
+    static PairSharedBuffer newSend(SharedBuffer& headers, proto::BaseCommand& cmd, ChecksumType checksumType,
+                                    const SendArguments& args);
 
     static SharedBuffer newSubscribe(
         const std::string& topic, const std::string& subscription, uint64_t consumerId, uint64_t requestId,
@@ -104,7 +109,7 @@ class Commands {
         const std::map<std::string, std::string>& metadata,
         const std::map<std::string, std::string>& subscriptionProperties, const SchemaInfo& schemaInfo,
         CommandSubscribe_InitialPosition subscriptionInitialPosition, bool replicateSubscriptionState,
-        KeySharedPolicy keySharedPolicy, int priorityLevel = 0);
+        const KeySharedPolicy& keySharedPolicy, int priorityLevel = 0);
 
     static SharedBuffer newUnsubscribe(uint64_t consumerId, uint64_t requestId);
 
@@ -117,8 +122,15 @@ class Commands {
                                     const std::string& initialSubscriptionName);
 
     static SharedBuffer newAck(uint64_t consumerId, int64_t ledgerId, int64_t entryId, const BitSet& ackSet,
+                               CommandAck_AckType ackType);
+    static SharedBuffer newAck(uint64_t consumerId, int64_t ledgerId, int64_t entryId, const BitSet& ackSet,
+                               CommandAck_AckType ackType, uint64_t requestId);
+    static SharedBuffer newAck(uint64_t consumerId, int64_t ledgerId, int64_t entryId, const BitSet& ackSet,
                                CommandAck_AckType ackType, CommandAck_ValidationError validationError);
+
     static SharedBuffer newMultiMessageAck(uint64_t consumerId, const std::set<MessageId>& msgIds);
+    static SharedBuffer newMultiMessageAck(uint64_t consumerId, const std::set<MessageId>& msgIds,
+                                           uint64_t requestId);
 
     static SharedBuffer newFlow(uint64_t consumerId, uint32_t messagePermits);
 
@@ -136,8 +148,8 @@ class Commands {
 
     static void initBatchMessageMetadata(const Message& msg, pulsar::proto::MessageMetadata& batchMetadata);
 
-    static PULSAR_PUBLIC uint64_t serializeSingleMessageInBatchWithPayload(
-        const Message& msg, SharedBuffer& batchPayLoad, unsigned long maxMessageSizeInBytes);
+    static uint64_t serializeSingleMessagesToBatchPayload(SharedBuffer& batchPayload,
+                                                          const std::vector<Message>& messages);
 
     static Message deSerializeSingleMessageInBatch(Message& batchedMessage, int32_t batchIndex,
                                                    int32_t batchSize, const BatchMessageAckerPtr& acker);
@@ -149,7 +161,8 @@ class Commands {
     static SharedBuffer newSeek(uint64_t consumerId, uint64_t requestId, const MessageId& messageId);
     static SharedBuffer newSeek(uint64_t consumerId, uint64_t requestId, uint64_t timestamp);
     static SharedBuffer newGetLastMessageId(uint64_t consumerId, uint64_t requestId);
-    static SharedBuffer newGetTopicsOfNamespace(const std::string& nsName, uint64_t requestId);
+    static SharedBuffer newGetTopicsOfNamespace(const std::string& nsName,
+                                                CommandGetTopicsOfNamespace_Mode mode, uint64_t requestId);
 
     static bool peerSupportsGetLastMessageId(int32_t peerVersion);
     static bool peerSupportsActiveConsumerListener(int32_t peerVersion);

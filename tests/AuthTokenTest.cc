@@ -22,7 +22,6 @@
 #include <pulsar/Client.h>
 
 #include <boost/algorithm/string.hpp>
-#include <boost/asio.hpp>
 #include <fstream>
 #include <streambuf>
 #include <string>
@@ -37,7 +36,11 @@ using namespace pulsar;
 static const std::string serviceUrl = "pulsar://localhost:6650";
 static const std::string serviceUrlHttp = "http://localhost:8080";
 
-static const std::string tokenPath = "../.test-token.txt";
+#ifndef TOKEN_PATH
+#error "TOKEN_PATH is not specified"
+#endif
+
+static const std::string tokenPath = TOKEN_PATH;
 
 static std::string getToken() {
     std::ifstream file(tokenPath);
@@ -196,4 +199,14 @@ TEST(AuthPluginToken, testNoAuthWithHttp) {
     Consumer consumer;
     result = client.subscribe(topicName, subName, consumer);
     ASSERT_EQ(ResultConnectError, result);
+}
+
+TEST(AuthPluginToken, testTokenSupplierException) {
+    ClientConfiguration config;
+    config.setAuth(
+        AuthToken::create([]() -> std::string { throw std::runtime_error("failed to generate token"); }));
+    Client client(serviceUrl, config);
+    Producer producer;
+    ASSERT_EQ(ResultAuthenticationError, client.createProducer("topic", producer));
+    ASSERT_EQ(ResultOk, client.close());
 }

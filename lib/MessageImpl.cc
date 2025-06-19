@@ -20,8 +20,6 @@
 
 namespace pulsar {
 
-MessageImpl::MessageImpl() : metadata(), payload(), messageId(), cnx_(0), topicName_(), redeliveryCount_() {}
-
 const Message::StringMap& MessageImpl::properties() {
     if (properties_.size() == 0) {
         for (int i = 0; i < metadata.properties_size(); i++) {
@@ -85,8 +83,8 @@ void MessageImpl::setOrderingKey(const std::string& orderingKey) { metadata.set_
 
 void MessageImpl::setEventTimestamp(uint64_t eventTimestamp) { metadata.set_event_time(eventTimestamp); }
 
-void MessageImpl::setTopicName(const std::string& topicName) {
-    topicName_ = &topicName;
+void MessageImpl::setTopicName(const std::shared_ptr<std::string>& topicName) {
+    topicName_ = topicName;
     messageId.setTopicName(topicName);
 }
 
@@ -124,7 +122,7 @@ void MessageImpl::convertPayloadToKeyValue(const pulsar::SchemaInfo& schemaInfo)
                                        getKeyValueEncodingType(schemaInfo));
 }
 
-KeyValueEncodingType MessageImpl::getKeyValueEncodingType(SchemaInfo schemaInfo) {
+KeyValueEncodingType MessageImpl::getKeyValueEncodingType(const SchemaInfo& schemaInfo) {
     if (schemaInfo.getSchemaType() != KEY_VALUE) {
         throw std::invalid_argument("Schema not key value type.");
     }

@@ -38,7 +38,7 @@ class MyTestLogger : public Logger {
     void log(Level level, int line, const std::string &message) override {
         std::stringstream ss;
         ss << std::this_thread::get_id() << " " << level << " " << fileName_ << ":" << line << " " << message
-           << std::endl;
+           << '\n';
         logLines.emplace_back(ss.str());
     }
 
@@ -106,4 +106,14 @@ TEST(CustomLoggerTest, testConsoleLoggerFactory) {
     ASSERT_FALSE(logger->isEnabled(Logger::LEVEL_INFO));
     ASSERT_FALSE(logger->isEnabled(Logger::LEVEL_WARN));
     ASSERT_TRUE(logger->isEnabled(Logger::LEVEL_ERROR));
+}
+
+TEST(CustomLoggerTest, testSetAndGetLoggerFactory) {
+    LoggerFactory *oldFactory = LogUtils::getLoggerFactory();
+    LoggerFactory *newFactory = new ConsoleLoggerFactory(Logger::LEVEL_ERROR);
+    std::unique_ptr<LoggerFactory> newFactoryPtr(newFactory);
+    LogUtils::setLoggerFactory(std::move(newFactoryPtr));
+    ASSERT_NE(oldFactory, LogUtils::getLoggerFactory());
+    ASSERT_EQ(newFactory, LogUtils::getLoggerFactory());
+    LogUtils::resetLoggerFactory();
 }

@@ -19,6 +19,7 @@
 
 if (NOT MSVC)
   set(CMAKE_C_FLAGS " -std=c99 ${CMAKE_C_FLAGS}")
+  add_compile_options(-Wextra -Wno-unused-parameter)
 endif()
 
 set(SAMPLE_ASYNC_PRODUCER_SOURCES
@@ -85,6 +86,11 @@ add_executable(SampleReaderCApi                       ${SAMPLE_READER_C_SOURCES}
 add_executable(SampleKeyValueSchemaConsumer           ${SAMPLE_KEY_VALUE_SCHEMA_CONSUMER})
 add_executable(SampleKeyValueSchemaProducer           ${SAMPLE_KEY_VALUE_SCHEMA_PRODUCER})
 add_executable(SampleCustomLoggerCApi                 ${SAMPLE_CUSTOM_LOGGER_CAPI})
+
+if (INTEGRATE_VCPKG)
+    # pulsarShared already carries INCLUDE_DIRECTORIES and LINK_DIRECTORIES properties
+    set(CLIENT_LIBS "")
+endif ()
 
 target_link_libraries(SampleAsyncProducer              ${CLIENT_LIBS} pulsarShared)
 target_link_libraries(SampleConsumer                   ${CLIENT_LIBS} pulsarShared)

@@ -68,8 +68,11 @@ class MessageIdImpl {
     int32_t batchIndex_ = -1;
     int32_t batchSize_ = 0;
 
-    const std::string& getTopicName() { return *topicName_; }
-    void setTopicName(const std::string& topicName) { topicName_ = &topicName; }
+    const std::string& getTopicName() {
+        static const std::string EMPTY_TOPIC = "";
+        return topicName_ ? *topicName_ : EMPTY_TOPIC;
+    }
+    void setTopicName(const std::shared_ptr<std::string>& topicName) { topicName_ = topicName; }
 
     virtual const BitSet& getBitSet() const noexcept {
         static const BitSet emptyBitSet;
@@ -77,7 +80,7 @@ class MessageIdImpl {
     }
 
    private:
-    const std::string* topicName_ = nullptr;
+    std::shared_ptr<std::string> topicName_;
     friend class MessageImpl;
     friend class MultiTopicsConsumerImpl;
     friend class UnAckedMessageTrackerEnabled;

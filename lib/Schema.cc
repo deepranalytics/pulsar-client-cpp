@@ -25,11 +25,10 @@
 #include <map>
 #include <memory>
 
+#include "JsonUtils.h"
 #include "SchemaUtils.h"
 
 using boost::property_tree::ptree;
-using boost::property_tree::read_json;
-using boost::property_tree::write_json;
 
 PULSAR_PUBLIC std::ostream &operator<<(std::ostream &s, pulsar::SchemaType schemaType) {
     return s << strSchemaType(schemaType);
@@ -54,7 +53,7 @@ PULSAR_PUBLIC const char *strEncodingType(KeyValueEncodingType encodingType) {
     return "UnknownSchemaType";
 }
 
-PULSAR_PUBLIC KeyValueEncodingType enumEncodingType(std::string encodingTypeStr) {
+PULSAR_PUBLIC KeyValueEncodingType enumEncodingType(const std::string &encodingTypeStr) {
     if (encodingTypeStr == "INLINE") {
         return KeyValueEncodingType::INLINE;
     } else if (encodingTypeStr == "SEPARATED") {
@@ -105,7 +104,7 @@ PULSAR_PUBLIC const char *strSchemaType(SchemaType schemaType) {
     return "UnknownSchemaType";
 }
 
-PULSAR_PUBLIC SchemaType enumSchemaType(std::string schemaTypeStr) {
+PULSAR_PUBLIC SchemaType enumSchemaType(const std::string &schemaTypeStr) {
     if (schemaTypeStr == "NONE") {
         return NONE;
     } else if (schemaTypeStr == "STRING") {
@@ -170,11 +169,7 @@ SchemaInfo::SchemaInfo(const SchemaInfo &keySchema, const SchemaInfo &valueSchem
         for (auto &entry : properties) {
             pt.put(entry.first, entry.second);
         }
-        std::ostringstream buf;
-        write_json(buf, pt, false);
-        auto s = buf.str();
-        s.pop_back();
-        return s;
+        return toJson(pt);
     };
 
     StringMap properties;
@@ -186,8 +181,8 @@ SchemaInfo::SchemaInfo(const SchemaInfo &keySchema, const SchemaInfo &valueSchem
     properties.emplace(VALUE_SCHEMA_PROPS, writeJson(valueSchema.getProperties()));
     properties.emplace(KV_ENCODING_TYPE, strEncodingType(keyValueEncodingType));
 
-    std::string keySchemaStr = keySchema.getSchema();
-    std::string valueSchemaStr = valueSchema.getSchema();
+    const auto &keySchemaStr = keySchema.getSchema();
+    const auto &valueSchemaStr = valueSchema.getSchema();
     impl_ = std::make_shared<SchemaInfoImpl>(KEY_VALUE, "KeyValue",
                                              mergeKeyValueSchema(keySchemaStr, valueSchemaStr), properties);
 }

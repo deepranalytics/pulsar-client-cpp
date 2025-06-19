@@ -30,20 +30,18 @@
 #include <boost/accumulators/framework/features.hpp>
 #include <boost/accumulators/statistics.hpp>
 #include <boost/accumulators/statistics/extended_p_square.hpp>
-#include <boost/asio/deadline_timer.hpp>
-#include <boost/date_time/local_time/local_time.hpp>
 #include <iostream>
 #include <memory>
 #include <mutex>
 #include <vector>
 
 #include "ProducerStatsBase.h"
+#include "lib/AsioTimer.h"
 
 namespace pulsar {
 
 class ExecutorService;
 using ExecutorServicePtr = std::shared_ptr<ExecutorService>;
-using DeadlineTimerPtr = std::shared_ptr<boost::asio::deadline_timer>;
 
 typedef boost::accumulators::accumulator_set<
     double,
@@ -64,8 +62,7 @@ class ProducerStatsImpl : public std::enable_shared_from_this<ProducerStatsImpl>
     std::map<Result, unsigned long> totalSendMap_;
     LatencyAccumulator totalLatencyAccumulator_;
 
-    ExecutorServicePtr executor_;
-    DeadlineTimerPtr timer_;
+    const DeadlineTimerPtr timer_;
     std::mutex mutex_;
     unsigned int statsIntervalInSeconds_;
 
@@ -75,16 +72,20 @@ class ProducerStatsImpl : public std::enable_shared_from_this<ProducerStatsImpl>
 
     static std::string latencyToString(const LatencyAccumulator&);
 
+    void scheduleTimer();
+
    public:
-    ProducerStatsImpl(std::string, ExecutorServicePtr, unsigned int);
+    ProducerStatsImpl(std::string, const ExecutorServicePtr&, unsigned int);
 
     ProducerStatsImpl(const ProducerStatsImpl& stats);
 
-    void flushAndReset(const boost::system::error_code&);
+    void start() override;
 
-    void messageSent(const Message&);
+    void flushAndReset(const ASIO_ERROR&);
 
-    void messageReceived(Result, const boost::posix_time::ptime&);
+    void messageSent(const Message&) override;
+
+    void messageReceived(Result, const ptime&) override;
 
     ~ProducerStatsImpl();
 

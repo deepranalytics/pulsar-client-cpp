@@ -70,6 +70,7 @@ TEST(ConsumerConfigurationTest, testDefaultConfig) {
     ASSERT_EQ(conf.getBatchReceivePolicy().getMaxNumBytes(), 10 * 1024 * 1024);
     ASSERT_EQ(conf.getBatchReceivePolicy().getTimeoutMs(), 100);
     ASSERT_EQ(conf.isBatchIndexAckEnabled(), false);
+    ASSERT_EQ(conf.isAckReceiptEnabled(), false);
 }
 
 TEST(ConsumerConfigurationTest, testCustomConfig) {
@@ -89,7 +90,7 @@ TEST(ConsumerConfigurationTest, testCustomConfig) {
     conf.setConsumerType(ConsumerKeyShared);
     ASSERT_EQ(conf.getConsumerType(), ConsumerKeyShared);
 
-    conf.setMessageListener([](Consumer consumer, const Message& msg) {});
+    conf.setMessageListener([](const Consumer& consumer, const Message& msg) {});
     ASSERT_EQ(conf.hasMessageListener(), true);
 
     conf.setConsumerEventListener(std::make_shared<DummyEventListener>());
@@ -168,6 +169,9 @@ TEST(ConsumerConfigurationTest, testCustomConfig) {
 
     conf.setBatchIndexAckEnabled(true);
     ASSERT_EQ(conf.isBatchIndexAckEnabled(), true);
+
+    conf.setAckReceiptEnabled(true);
+    ASSERT_TRUE(conf.isAckReceiptEnabled());
 }
 
 TEST(ConsumerConfigurationTest, testReadCompactPersistentExclusive) {
@@ -310,7 +314,7 @@ TEST(ConsumerConfigurationTest, testSubscriptionInitialPosition) {
     ASSERT_EQ(content1, receivedMsg.getDataAsString());
 
     ASSERT_EQ(ResultOk, consumer.unsubscribe());
-    ASSERT_EQ(ResultAlreadyClosed, consumer.close());
+    ASSERT_EQ(ResultOk, consumer.close());
     ASSERT_EQ(ResultOk, producer.close());
     ASSERT_EQ(ResultOk, client.close());
 }

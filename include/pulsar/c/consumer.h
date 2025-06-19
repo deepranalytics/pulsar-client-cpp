@@ -25,6 +25,7 @@ extern "C" {
 #endif
 
 #include <pulsar/c/message.h>
+#include <pulsar/c/messages.h>
 #include <pulsar/c/result.h>
 #include <stdint.h>
 
@@ -33,6 +34,8 @@ typedef struct _pulsar_consumer pulsar_consumer_t;
 typedef void (*pulsar_result_callback)(pulsar_result, void *);
 
 typedef void (*pulsar_receive_callback)(pulsar_result result, pulsar_message_t *msg, void *ctx);
+
+typedef void (*pulsar_batch_receive_callback)(pulsar_result result, pulsar_messages_t *msgs, void *ctx);
 
 /**
  * @return the topic this consumer is subscribed to
@@ -106,6 +109,28 @@ PULSAR_PUBLIC pulsar_result pulsar_consumer_receive_with_timeout(pulsar_consumer
  */
 PULSAR_PUBLIC void pulsar_consumer_receive_async(pulsar_consumer_t *consumer,
                                                  pulsar_receive_callback callback, void *ctx);
+
+/**
+ * Batch receiving messages.
+ *
+ * NOTE:
+ * 1. When it's received successfully, `*msg` will point to the memory that is allocated internally. You
+ * have to call `pulsar_messages_free` to free it.
+ * 2. Undefined behavior will happen if `msgs` is NULL.
+ */
+PULSAR_PUBLIC pulsar_result pulsar_consumer_batch_receive(pulsar_consumer_t *consumer,
+                                                          pulsar_messages_t **msgs);
+
+/**
+ * Async batch receiving messages.
+ *
+ * @param callback
+ * 1. When the result in the callback is `ResultOk`, `msgs` in the callback will point to the memory that
+ * is allocated internally. You have to call `pulsar_messages_free` to free it.
+ * 2. If the result in the callback is not `ResultOk`, `msgs` in the callback will be nullptr.
+ */
+PULSAR_PUBLIC void pulsar_consumer_batch_receive_async(pulsar_consumer_t *consumer,
+                                                       pulsar_batch_receive_callback callback, void *ctx);
 
 /**
  * Acknowledge the reception of a single message.

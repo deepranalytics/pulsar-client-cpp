@@ -21,209 +21,116 @@
 
 # Pulsar C++ client library
 
-Examples for using the API to publish and consume messages can be found under the [examples](https://github.com/apache/pulsar-client-cpp/tree/main/examples) folder.
+Pulsar C++ clients support a variety of Pulsar features to enable building applications connecting to your Pulsar cluster.
+
+For the supported Pulsar features, see [Client Feature Matrix](https://pulsar.apache.org/client-feature-matrix/).
+
+For how to use APIs to publish and consume messages, see [examples](https://github.com/apache/pulsar-client-cpp/tree/main/examples).
+
+## Import the library into your project
+
+### CMake with vcpkg integration
+
+Navigate to [vcpkg-example](./vcpkg-example) for how to import the `pulsar-client-cpp` into your project via vcpkg.
+
+### Download pre-built binaries
+
+For non-vcpkg projects, you can download pre-built binaries from the [official release page](https://pulsar.apache.org/download/#pulsar-c-client).
 
 ## Generate the API documents
 
 Pulsar C++ client uses [doxygen](https://www.doxygen.nl) to build API documents. After installing `doxygen`, you only need to run `doxygen` to generate the API documents whose main page is under the `doxygen/html/index.html` path.
 
-## Requirements
+## Build with vcpkg
 
-* A C++ compiler that supports C++11, like GCC >= 4.8
-* CMake >= 3.13
-* [Boost](http://www.boost.org/)
-* [Protocol Buffer](https://developers.google.com/protocol-buffers/) >= 3
-* [libcurl](https://curl.se/libcurl/)
-* [openssl](https://github.com/openssl/openssl)
+Since it's integrated with vcpkg, see [vcpkg#README](https://github.com/microsoft/vcpkg#readme) for the requirements. See [LEGACY_BUILD](./LEGACY_BUILD.md) if you want to manage dependencies by yourself or you cannot install vcpkg in your own environment.
 
-The default supported [compression types](include/pulsar/CompressionType.h) are:
+### How to build from source
 
-* `CompressionNone`
-* `CompressionLZ4`
+The simplest way is to clone this project with the vcpkg submodule.
 
-If you want to enable other compression types, you need to install:
+```bash
+git clone https://github.com/apache/pulsar-client-cpp.git
+cd pulsar-client-cpp
+git submodule update --init --recursive
+cmake -B build -DINTEGRATE_VCPKG=ON
+cmake --build build -j8
+```
 
-* `CompressionZLib`: [zlib](https://zlib.net/)
-* `CompressionZSTD`: [zstd](https://github.com/facebook/zstd)
-* `CompressionSNAPPY`: [snappy](https://github.com/google/snappy)
+The 1st step will download vcpkg and then install all dependencies according to the version description in [vcpkg.json](./vcpkg.json). The 2nd step will build the Pulsar C++ libraries under `./build/lib/`, where `./build` is the CMake build directory.
 
-If you want to build and run the tests, you need to install [GTest](https://github.com/google/googletest). Otherwise, you need to add CMake option `-DBUILD_TESTS=OFF`.
+> You can also add the CMAKE_TOOLCHAIN_FILE option if your system already have vcpkg installed.
+>
+> ```bash
+> git clone https://github.com/apache/pulsar-client-cpp.git
+> cd pulsar-client-cpp
+> # For example, you can install vcpkg in /tmp/vcpkg
+> cd /tmp && git clone https://github.com/microsoft/vcpkg.git && cd -
+> cmake -B build -DINTEGRATE_VCPKG=ON -DCMAKE_TOOLCHAIN_FILE="/tmp/vcpkg/scripts/buildsystems/vcpkg.cmake"
+> cmake --build build -j8
+> ```
 
-If you want to use `ClientConfiguration::setLogConfFilePath`, you need to install the [Log4CXX](https://logging.apache.org/log4cxx) and add CMake option `-DUSE_LOG4CXX=ON`.
+After the build, the hierarchy of the `build` directory will be:
+
+```
+build/
+  include/   -- extra C++ headers
+  lib/       -- libraries
+  tests/     -- test executables
+  examples/  -- example executables
+  generated/
+    lib/     -- protobuf source files for PulsarApi.proto
+    tests/   -- protobuf source files for *.proto used in tests
+```
+
+### How to install
+
+To install the C++ headers and libraries into a specific path, e.g. `/tmp/pulsar`, run the following commands:
+
+```bash
+cmake -B build -DINTEGRATE_VCPKG=ON -DCMAKE_INSTALL_PREFIX=/tmp/pulsar
+cmake --build build -j8 --target install
+```
+
+For example, on macOS you will see:
+
+```
+/tmp/pulsar/
+  include/pulsar     -- C/C++ headers
+  lib/
+    libpulsar.a      -- Static library
+    libpulsar.dylib  -- Dynamic library
+```
+
+### Tests
+
+Tests are built by default. You should execute [run-unit-tests.sh](./run-unit-tests.sh) to run tests locally.
+
+If you don't want to build the tests, disable the `BUILD_TESTS` option:
+
+```bash
+cmake -B build -DINTEGRATE_VCPKG=ON -DBUILD_TESTS=OFF
+cmake --build build -j8
+```
+
+### Build perf tools
+
+If you want to build the perf tools, enable the `BUILD_PERF_TOOLS` option:
+
+```bash
+cmake -B build -DINTEGRATE_VCPKG=ON -DBUILD_PERF_TOOLS=ON
+cmake --build build -j8
+```
+
+Then the perf tools will be built under `./build/perf/`.
 
 ## Platforms
 
 Pulsar C++ Client Library has been tested on:
 
-* Linux
-* Mac OS X
-* Windows x64
-
-## Compilation
-
-### Clone
-
-First of all, clone the source code:
-
-```shell
-git clone https://github.com/apache/pulsar-client-cpp
-cd pulsar-client-cpp
-```
-
-### Compile on Ubuntu
-
-#### Install all dependencies:
-
-```shell
-sudo apt-get update -y && sudo apt-get install -y g++ cmake libssl-dev libcurl4-openssl-dev \
-                libprotobuf-dev libboost-all-dev libgtest-dev libgmock-dev \
-                protobuf-compiler
-```
-
-#### Compile Pulsar client library:
-
-```shell
-cmake .
-make
-```
-
-#### Checks
-
-Client library will be placed in:
-
-```
-lib/libpulsar.so
-lib/libpulsar.a
-```
-
-Tools will be placed in:
-
-```
-perf/perfProducer
-perf/perfConsumer
-```
-
-### Compile on Mac OS X
-
-#### Install all dependencies:
-
-```shell
-brew install cmake openssl protobuf boost boost-python3 googletest zstd snappy
-```
-
-#### Compile Pulsar client library:
-
-```shell
-cmake .
-make
-```
-
-#### Checks
-
-Client library will be placed in:
-
-```
-lib/libpulsar.dylib
-lib/libpulsar.a
-```
-
-Tools will be placed in:
-
-```
-perf/perfProducer
-perf/perfConsumer
-```
-
-### Compile on Windows
-
-#### Install with [vcpkg](https://github.com/microsoft/vcpkg)
-
-It's highly recommended to use `vcpkg` for C++ package management on Windows. It's easy to install and well supported by Visual Studio (2015/2017/2019) and CMake. See [here](https://github.com/microsoft/vcpkg#quick-start-windows) for quick start.
-
-Take Windows 64-bit library as an example, you only need to run
-
-```bash
-vcpkg install --feature-flags=manifests --triplet x64-windows
-```
-
-> NOTE: For Windows 32-bit library, change `x64-windows` to `x86-windows`, see [here](https://github.com/microsoft/vcpkg/blob/master/docs/users/triplets.md) for more details about the triplet concept in Vcpkg.
-
-The all dependencies, which are specified by [vcpkg.json](vcpkg.json), will be installed in `vcpkg_installed/` subdirectory,
-
-With `vcpkg`, you only need to run two commands:
-
-```bash
-cmake \
- -B ./build \
- -A x64 \
- -DBUILD_TESTS=OFF \
- -DVCPKG_TRIPLET=x64-windows \
- -DCMAKE_BUILD_TYPE=Release \
- -S .
-cmake --build ./build --config Release
-```
-
-Then all artifacts will be built into `build` subdirectory.
-
-> **NOTE**:
->
-> 1. For Windows 32-bit, you need to use `-A Win32` and `-DVCPKG_TRIPLET=x86-windows`.
-> 2. For MSVC Debug mode, you need to replace `Release` with `Debug` for both `CMAKE_BUILD_TYPE` variable and `--config` option.
-
-#### Install dependencies manually
-
-You need to install [dlfcn-win32](https://github.com/dlfcn-win32/dlfcn-win32) in addition.
-
-If you installed the dependencies manually, you need to run
-
-```shell
-#If all dependencies are in your path, all that is necessary is
-cmake .
-
-#if all dependencies are not in your path, then passing in a PROTOC_PATH and CMAKE_PREFIX_PATH is necessary
-cmake -DPROTOC_PATH=C:/protobuf/bin/protoc -DCMAKE_PREFIX_PATH="C:/boost;C:/openssl;C:/zlib;C:/curl;C:/protobuf;C:/googletest;C:/dlfcn-win32" .
-
-#This will generate pulsar-cpp.sln. Open this in Visual Studio and build the desired configurations.
-```
-
-#### Checks
-
-Client library will be placed in:
-
-```
-build/lib/Release/pulsar.lib
-build/lib/Release/pulsar.dll
-```
-
-#### Examples
-
-Add windows environment paths:
-
-```
-build/lib/Release
-vcpkg_installed
-```
-
-Examples will be available in:
-
-```
-build/examples/Release
-```
-
-## Tests
-
-```shell
-# Execution
-# Start standalone broker
-./pulsar-test-service-start.sh
-
-# Run the tests
-cd tests
-./pulsar-tests
-
-# When no longer needed, stop standalone broker
-./pulsar-test-service-stop.sh
-```
+- Linux
+- Mac OS X
+- Windows x64
 
 ## Wireshark Dissector
 
@@ -231,8 +138,10 @@ See the [wireshark](wireshark/) directory for details.
 
 ## Requirements for Contributors
 
-It's required to install [LLVM](https://llvm.org/builds/) for `clang-tidy` and `clang-format`. Pulsar C++ client use `clang-format` **11** to format files.  `make format` automatically formats the files.
+It's required to install [LLVM](https://llvm.org/builds/) for `clang-tidy` and `clang-format`. Pulsar C++ client use `clang-format` **11** to format files. `make format` automatically formats the files.
 
 For Ubuntu users, you can install `clang-format-11` via `apt install clang-format-11`. For other users, run `./build-support/docker-format.sh` if you have Docker installed.
 
 We welcome contributions from the open source community, kindly make sure your changes are backward compatible with GCC 4.8 and Boost 1.53.
+
+If your contribution adds Pulsar features for C++ clients, you need to update both the [Pulsar docs](https://pulsar.apache.org/docs/client-libraries/) and the [Client Feature Matrix](https://pulsar.apache.org/client-feature-matrix/). See [Contribution Guide](https://pulsar.apache.org/contribute/site-intro/#pages) for more details.

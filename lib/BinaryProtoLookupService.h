@@ -34,13 +34,13 @@ class ConnectionPool;
 class LookupDataResult;
 class ServiceNameResolver;
 using NamespaceTopicsPromisePtr = std::shared_ptr<Promise<Result, NamespaceTopicsPtr>>;
-using GetSchemaPromisePtr = std::shared_ptr<Promise<Result, boost::optional<SchemaInfo>>>;
+using GetSchemaPromisePtr = std::shared_ptr<Promise<Result, SchemaInfo>>;
 
 class PULSAR_PUBLIC BinaryProtoLookupService : public LookupService {
    public:
-    BinaryProtoLookupService(ServiceNameResolver& serviceNameResolver, ConnectionPool& pool,
+    BinaryProtoLookupService(const std::string& serviceUrl, ConnectionPool& pool,
                              const ClientConfiguration& clientConfiguration)
-        : serviceNameResolver_(serviceNameResolver),
+        : serviceNameResolver_(serviceUrl),
           cnxPool_(pool),
           listenerName_(clientConfiguration.getListenerName()),
           maxLookupRedirects_(clientConfiguration.getMaxLookupRedirects()) {}
@@ -49,9 +49,12 @@ class PULSAR_PUBLIC BinaryProtoLookupService : public LookupService {
 
     Future<Result, LookupDataResultPtr> getPartitionMetadataAsync(const TopicNamePtr& topicName) override;
 
-    Future<Result, NamespaceTopicsPtr> getTopicsOfNamespaceAsync(const NamespaceNamePtr& nsName) override;
+    Future<Result, NamespaceTopicsPtr> getTopicsOfNamespaceAsync(
+        const NamespaceNamePtr& nsName, CommandGetTopicsOfNamespace_Mode mode) override;
 
-    Future<Result, boost::optional<SchemaInfo>> getSchema(const TopicNamePtr& topicName) override;
+    Future<Result, SchemaInfo> getSchema(const TopicNamePtr& topicName, const std::string& version) override;
+
+    ServiceNameResolver& getServiceNameResolver() override { return serviceNameResolver_; }
 
    protected:
     // Mark findBroker as protected to make it accessible from test.
@@ -62,28 +65,29 @@ class PULSAR_PUBLIC BinaryProtoLookupService : public LookupService {
     std::mutex mutex_;
     uint64_t requestIdGenerator_ = 0;
 
-    ServiceNameResolver& serviceNameResolver_;
+    ServiceNameResolver serviceNameResolver_;
     ConnectionPool& cnxPool_;
     std::string listenerName_;
     const int32_t maxLookupRedirects_;
 
     void sendPartitionMetadataLookupRequest(const std::string& topicName, Result result,
                                             const ClientConnectionWeakPtr& clientCnx,
-                                            LookupDataResultPromisePtr promise);
+                                            const LookupDataResultPromisePtr& promise);
 
-    void handlePartitionMetadataLookup(const std::string& topicName, Result result, LookupDataResultPtr data,
+    void handlePartitionMetadataLookup(const std::string& topicName, Result result,
+                                       const LookupDataResultPtr& data,
                                        const ClientConnectionWeakPtr& clientCnx,
-                                       LookupDataResultPromisePtr promise);
+                                       const LookupDataResultPromisePtr& promise);
 
-    void sendGetTopicsOfNamespaceRequest(const std::string& nsName, Result result,
-                                         const ClientConnectionWeakPtr& clientCnx,
-                                         NamespaceTopicsPromisePtr promise);
+    void sendGetTopicsOfNamespaceRequest(const std::string& nsName, CommandGetTopicsOfNamespace_Mode mode,
+                                         Result result, const ClientConnectionWeakPtr& clientCnx,
+                                         const NamespaceTopicsPromisePtr& promise);
 
-    void sendGetSchemaRequest(const std::string& topiName, Result result,
-                              const ClientConnectionWeakPtr& clientCnx, GetSchemaPromisePtr promise);
+    void sendGetSchemaRequest(const std::string& topicName, const std::string& version, Result result,
+                              const ClientConnectionWeakPtr& clientCnx, const GetSchemaPromisePtr& promise);
 
-    void getTopicsOfNamespaceListener(Result result, NamespaceTopicsPtr topicsPtr,
-                                      NamespaceTopicsPromisePtr promise);
+    void getTopicsOfNamespaceListener(Result result, const NamespaceTopicsPtr& topicsPtr,
+                                      const NamespaceTopicsPromisePtr& promise);
 
     uint64_t newRequestId();
 };

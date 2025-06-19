@@ -21,11 +21,13 @@
 
 #include <pulsar/ConsumerCryptoFailureAction.h>
 #include <pulsar/ConsumerEventListener.h>
+#include <pulsar/ConsumerInterceptor.h>
 #include <pulsar/ConsumerType.h>
 #include <pulsar/CryptoKeyReader.h>
 #include <pulsar/InitialPosition.h>
 #include <pulsar/KeySharedPolicy.h>
 #include <pulsar/Message.h>
+#include <pulsar/RegexSubscriptionMode.h>
 #include <pulsar/Result.h>
 #include <pulsar/Schema.h>
 #include <pulsar/TypedMessage.h>
@@ -115,7 +117,7 @@ class PULSAR_PUBLIC ConsumerConfiguration {
      *
      * @param keySharedPolicy The {@link KeySharedPolicy} want to specify
      */
-    ConsumerConfiguration& setKeySharedPolicy(KeySharedPolicy keySharedPolicy);
+    ConsumerConfiguration& setKeySharedPolicy(const KeySharedPolicy& keySharedPolicy);
 
     /**
      * @return the KeyShared subscription policy
@@ -383,6 +385,19 @@ class PULSAR_PUBLIC ConsumerConfiguration {
     int getPatternAutoDiscoveryPeriod() const;
 
     /**
+     * Determines which topics this consumer should be subscribed to - Persistent, Non-Persistent, or
+     * AllTopics. Only used with pattern subscriptions.
+     *
+     * @param regexSubscriptionMode The default value is `PersistentOnly`.
+     */
+    ConsumerConfiguration& setRegexSubscriptionMode(RegexSubscriptionMode regexSubscriptionMode);
+
+    /**
+     * @return the regex subscription mode for the pattern consumer.
+     */
+    RegexSubscriptionMode getRegexSubscriptionMode() const;
+
+    /**
      * The default value is `InitialPositionLatest`.
      *
      * @param subscriptionInitialPosition the initial position at which to set
@@ -617,6 +632,47 @@ class PULSAR_PUBLIC ConsumerConfiguration {
      * The associated getter of setBatchingEnabled
      */
     bool isBatchIndexAckEnabled() const;
+
+    /**
+     * Intercept the consumer
+     *
+     * @param interceptors the list of interceptors to intercept the consumer
+     * @return Consumer Configuration
+     */
+    ConsumerConfiguration& intercept(const std::vector<ConsumerInterceptorPtr>& interceptors);
+
+    const std::vector<ConsumerInterceptorPtr>& getInterceptors() const;
+
+    /**
+     * Whether to receive the ACK receipt from broker.
+     *
+     * By default, when Consumer::acknowledge is called, it won't wait until the corresponding response from
+     * broker. After it's enabled, the `acknowledge` method will return a Result that indicates if the
+     * acknowledgment succeeded.
+     *
+     * Default: false
+     */
+    ConsumerConfiguration& setAckReceiptEnabled(bool ackReceiptEnabled);
+
+    /**
+     * The associated getter of setAckReceiptEnabled.
+     */
+    bool isAckReceiptEnabled() const;
+
+    /**
+     * Starts the consumer in a paused state.
+     *
+     * When enabled, the consumer does not immediately fetch messages when the consumer is created.
+     * Instead, the consumer waits to fetch messages until Consumer::resumeMessageListener is called.
+     *
+     * Default: false
+     */
+    ConsumerConfiguration& setStartPaused(bool startPaused);
+
+    /**
+     * The associated getter of setStartPaused.
+     */
+    bool isStartPaused() const;
 
     friend class PulsarWrapper;
     friend class PulsarFriend;

@@ -32,14 +32,18 @@ namespace pulsar {
 
 void UnAckedMessageTrackerEnabled::timeoutHandler() {
     timeoutHandlerHelper();
-    ExecutorServicePtr executorService = client_->getIOExecutorProvider()->get();
+    auto client = client_.lock();
+    if (client == nullptr) {
+        return;
+    }
+    ExecutorServicePtr executorService = client->getIOExecutorProvider()->get();
     timer_ = executorService->createDeadlineTimer();
-    timer_->expires_from_now(boost::posix_time::milliseconds(tickDurationInMs_));
-    timer_->async_wait([&](const boost::system::error_code& ec) {
-        if (ec) {
-            LOG_DEBUG("Ignoring timer cancelled event, code[" << ec << "]");
-        } else {
-            timeoutHandler();
+    timer_->expires_from_now(std::chrono::milliseconds(tickDurationInMs_));
+    std::weak_ptr<UnAckedMessageTrackerEnabled> weakSelf{shared_from_this()};
+    timer_->async_wait([weakSelf](const ASIO_ERROR& ec) {
+        auto self = weakSelf.lock();
+        if (self && !ec) {
+            self->timeoutHandler();
         }
     });
 }
@@ -73,12 +77,12 @@ void UnAckedMessageTrackerEnabled::timeoutHandlerHelper() {
     }
 }
 
-UnAckedMessageTrackerEnabled::UnAckedMessageTrackerEnabled(long timeoutMs, const ClientImplPtr client,
+UnAckedMessageTrackerEnabled::UnAckedMessageTrackerEnabled(long timeoutMs, const ClientImplPtr& client,
                                                            ConsumerImplBase& consumer)
     : UnAckedMessageTrackerEnabled(timeoutMs, timeoutMs, client, consumer) {}
 
 UnAckedMessageTrackerEnabled::UnAckedMessageTrackerEnabled(long timeoutMs, long tickDurationInMs,
-                                                           const ClientImplPtr client,
+                                                           const ClientImplPtr& client,
                                                            ConsumerImplBase& consumer)
     : consumerReference_(consumer),
       client_(client),
@@ -91,9 +95,9 @@ UnAckedMessageTrackerEnabled::UnAckedMessageTrackerEnabled(long timeoutMs, long 
         std::set<MessageId> msgIds;
         timePartitions.push_back(msgIds);
     }
-
-    timeoutHandler();
 }
+
+void UnAckedMessageTrackerEnabled::start() { timeoutHandler(); }
 
 bool UnAckedMessageTrackerEnabled::add(const MessageId& msgId) {
     std::lock_guard<std::recursive_mutex> acquire(lock_);
@@ -172,9 +176,10 @@ void UnAckedMessageTrackerEnabled::clear() {
     }
 }
 
-UnAckedMessageTrackerEnabled::~UnAckedMessageTrackerEnabled() {
+void UnAckedMessageTrackerEnabled::stop() {
+    ASIO_ERROR ec;
     if (timer_) {
-        timer_->cancel();
+        timer_->cancel(ec);
     }
 }
 } /* namespace pulsar */

@@ -16,19 +16,27 @@
  * specific language governing permissions and limitations
  * under the License.
  */
+#include "ConsumerTest.h"
+
 #include <gtest/gtest.h>
 #include <pulsar/Client.h>
 
+#include <array>
+#include <atomic>
 #include <chrono>
 #include <ctime>
 #include <map>
+#include <mutex>
 #include <set>
+#include <string>
 #include <thread>
 #include <vector>
 
-#include "HttpHelper.h"
 #include "NoOpsCryptoKeyReader.h"
+#include "PulsarAdminHelper.h"
 #include "PulsarFriend.h"
+#include "SynchronizedQueue.h"
+#include "WaitUtils.h"
 #include "lib/ClientConnection.h"
 #include "lib/Future.h"
 #include "lib/LogUtils.h"
@@ -45,11 +53,15 @@ static const std::string adminUrl = "http://localhost:8080/";
 
 DECLARE_LOG_OBJECT()
 
+#ifndef TEST_CONF_DIR
+#error "TEST_CONF_DIR is not specified"
+#endif
+
 namespace pulsar {
 
 class ConsumerStateEventListener : public ConsumerEventListener {
    public:
-    ConsumerStateEventListener(std::string name) { name_ = name; }
+    ConsumerStateEventListener(std::string name) { name_ = std::move(name); }
 
     void becameActive(Consumer consumer, int partitionId) override {
         LOG_INFO("Received consumer active event, partitionId:" << partitionId << ", name: " << name_);
@@ -61,33 +73,12 @@ class ConsumerStateEventListener : public ConsumerEventListener {
         inActiveQueue_.push(partitionId);
     }
 
-    std::queue<int> activeQueue_;
-    std::queue<int> inActiveQueue_;
+    SynchronizedQueue<int> activeQueue_;
+    SynchronizedQueue<int> inActiveQueue_;
     std::string name_;
 };
 
 typedef std::shared_ptr<ConsumerStateEventListener> ConsumerStateEventListenerPtr;
-
-void verifyConsumerNotReceiveAnyStateChanges(ConsumerStateEventListenerPtr listener) {
-    ASSERT_EQ(0, listener->activeQueue_.size());
-    ASSERT_EQ(0, listener->inActiveQueue_.size());
-}
-
-void verifyConsumerActive(ConsumerStateEventListenerPtr listener, int partitionId) {
-    ASSERT_NE(0, listener->activeQueue_.size());
-    int pid = listener->activeQueue_.front();
-    listener->activeQueue_.pop();
-    ASSERT_EQ(partitionId, pid);
-    ASSERT_EQ(0, listener->inActiveQueue_.size());
-}
-
-void verifyConsumerInactive(ConsumerStateEventListenerPtr listener, int partitionId) {
-    ASSERT_NE(0, listener->inActiveQueue_.size());
-    int pid = listener->inActiveQueue_.front();
-    listener->inActiveQueue_.pop();
-    ASSERT_EQ(partitionId, pid);
-    ASSERT_EQ(0, listener->activeQueue_.size());
-}
 
 class ActiveInactiveListenerEvent : public ConsumerEventListener {
    public:
@@ -109,6 +100,27 @@ class ActiveInactiveListenerEvent : public ConsumerEventListener {
     std::mutex mutex_;
 };
 
+TEST(ConsumerTest, testConsumerIndex) {
+    Client client(lookupUrl);
+    const std::string topicName = "testConsumerIndex-topic-" + std::to_string(time(nullptr));
+    const std::string subName = "sub";
+    Producer producer;
+    Result producerResult = client.createProducer(topicName, producer);
+    ASSERT_EQ(producerResult, ResultOk);
+    Consumer consumer;
+    Result consumerResult = client.subscribe(topicName, subName, consumer);
+    ASSERT_EQ(consumerResult, ResultOk);
+    const auto msg = MessageBuilder().setContent("testConsumeSuccess").build();
+    Result sendResult = producer.send(msg);
+    ASSERT_EQ(sendResult, ResultOk);
+    Message receivedMsg;
+    Result receiveResult = consumer.receive(receivedMsg);
+    ASSERT_EQ(receiveResult, ResultOk);
+    ASSERT_EQ(receivedMsg.getDataAsString(), "testConsumeSuccess");
+    ASSERT_EQ(receivedMsg.getIndex(), -1);
+    client.close();
+}
+
 typedef std::shared_ptr<ActiveInactiveListenerEvent> ActiveInactiveListenerEventPtr;
 
 TEST(ConsumerTest, testConsumerEventWithoutPartition) {
@@ -116,9 +128,7 @@ TEST(ConsumerTest, testConsumerEventWithoutPartition) {
 
     const std::string topicName = "testConsumerEventWithoutPartition-topic-" + std::to_string(time(nullptr));
     const std::string subName = "sub";
-    const int waitTimeInMs = 1000;
-    // constexpr int unAckedMessagesTimeoutMs = 10000;
-    // constexpr int tickDurationInMs = 1000;
+    const auto waitTime = std::chrono::seconds(3);
 
     // 1. two consumers on the same subscription
     Consumer consumer1;
@@ -129,7 +139,9 @@ TEST(ConsumerTest, testConsumerEventWithoutPartition) {
     config1.setConsumerType(ConsumerType::ConsumerFailover);
 
     ASSERT_EQ(pulsar::ResultOk, client.subscribe(topicName, subName, config1, consumer1));
-    std::this_thread::sleep_for(std::chrono::milliseconds(waitTimeInMs * 2));
+    waitUntil(waitTime, [&listener1]() -> bool { return listener1->activeQueue_.size() == 1; });
+    ASSERT_EQ(listener1->activeQueue_.size(), 1);
+    ASSERT_EQ(listener1->activeQueue_.pop(), -1);
 
     Consumer consumer2;
     ConsumerConfiguration config2;
@@ -139,18 +151,22 @@ TEST(ConsumerTest, testConsumerEventWithoutPartition) {
     config2.setConsumerType(ConsumerType::ConsumerFailover);
 
     ASSERT_EQ(pulsar::ResultOk, client.subscribe(topicName, subName, config2, consumer2));
-    std::this_thread::sleep_for(std::chrono::milliseconds(waitTimeInMs * 2));
-
-    verifyConsumerActive(listener1, -1);
-    verifyConsumerInactive(listener2, -1);
-
-    // clear inActiveQueue_
-    std::queue<int>().swap(listener2->inActiveQueue_);
+    // Since https://github.com/apache/pulsar/pull/19502, both consumer and consumer2 could receive the
+    // inactive event
+    waitUntil(waitTime, [&listener1, &listener2]() -> bool {
+        return listener1->inActiveQueue_.size() == 1 || listener2->inActiveQueue_.size() == 1;
+    });
+    if (listener1->inActiveQueue_.size() == 1) {
+        ASSERT_EQ(listener1->inActiveQueue_.pop(), -1);
+    } else {
+        ASSERT_EQ(listener2->inActiveQueue_.size(), 1);
+        ASSERT_EQ(listener2->inActiveQueue_.pop(), -1);
+    }
 
     consumer1.close();
-    std::this_thread::sleep_for(std::chrono::milliseconds(waitTimeInMs * 2));
-    verifyConsumerActive(listener2, -1);
-    verifyConsumerNotReceiveAnyStateChanges(listener1);
+    waitUntil(waitTime, [&listener2]() -> bool { return listener2->activeQueue_.size() == 1; });
+    ASSERT_EQ(listener2->activeQueue_.size(), 1);
+    ASSERT_EQ(listener2->activeQueue_.pop(), -1);
 }
 
 TEST(ConsumerTest, testConsumerEventWithPartition) {
@@ -291,14 +307,16 @@ TEST(ConsumerTest, testAcknowledgeCumulativeWithPartition) {
     }
 
     Message msg;
+    std::array<MessageId, 2> latestMsgIds;
     for (int i = 0; i < numMessages; i++) {
         ASSERT_EQ(ResultOk, consumer.receive(msg));
         // The last message of each partition topic be ACK
-        if (i >= numMessages - 2) {
-            consumer.acknowledgeCumulative(msg.getMessageId());
-        }
+        latestMsgIds[msg.getMessageId().partition()] = msg.getMessageId();
     }
     ASSERT_EQ(ResultTimeout, consumer.receive(msg, 2000));
+    for (auto&& msgId : latestMsgIds) {
+        consumer.acknowledgeCumulative(msgId);
+    }
 
     // Assert that there is no message in the tracker.
     auto multiConsumerImpl = PulsarFriend::getMultiTopicsConsumerImplPtr(consumer);
@@ -940,7 +958,7 @@ TEST(ConsumerTest, testGetLastMessageIdBlockWhenConnectionDisconnected) {
     auto elapsed = TimeUtils::now() - start;
 
     // getLastMessageIdAsync should be blocked until operationTimeout when the connection is disconnected.
-    ASSERT_GE(elapsed.seconds(), operationTimeout);
+    ASSERT_GE(std::chrono::duration_cast<std::chrono::seconds>(elapsed).count(), operationTimeout);
 }
 
 TEST(ConsumerTest, testRedeliveryOfDecryptionFailedMessages) {
@@ -949,8 +967,8 @@ TEST(ConsumerTest, testRedeliveryOfDecryptionFailedMessages) {
     std::string topicName = "testRedeliveryOfDecryptionFailedMessages" + std::to_string(time(nullptr));
     std::string subName = "sub-test";
 
-    std::string PUBLIC_CERT_FILE_PATH = "../test-conf/public-key.client-rsa.pem";
-    std::string PRIVATE_CERT_FILE_PATH = "../test-conf/private-key.client-rsa.pem";
+    std::string PUBLIC_CERT_FILE_PATH = TEST_CONF_DIR "/public-key.client-rsa.pem";
+    std::string PRIVATE_CERT_FILE_PATH = TEST_CONF_DIR "/private-key.client-rsa.pem";
     std::shared_ptr<pulsar::DefaultCryptoKeyReader> keyReader =
         std::make_shared<pulsar::DefaultCryptoKeyReader>(PUBLIC_CERT_FILE_PATH, PRIVATE_CERT_FILE_PATH);
 
@@ -978,6 +996,7 @@ TEST(ConsumerTest, testRedeliveryOfDecryptionFailedMessages) {
     auto consumer2ImplPtr = PulsarFriend::getConsumerImplPtr(consumer2);
     consumer2ImplPtr->unAckedMessageTrackerPtr_.reset(new UnAckedMessageTrackerEnabled(
         100, 100, PulsarFriend::getClientImplPtr(client), static_cast<ConsumerImplBase&>(*consumer2ImplPtr)));
+    consumer2ImplPtr->unAckedMessageTrackerPtr_->start();
 
     ConsumerConfiguration consConfig3;
     consConfig3.setConsumerType(pulsar::ConsumerShared);
@@ -988,6 +1007,7 @@ TEST(ConsumerTest, testRedeliveryOfDecryptionFailedMessages) {
     auto consumer3ImplPtr = PulsarFriend::getConsumerImplPtr(consumer3);
     consumer3ImplPtr->unAckedMessageTrackerPtr_.reset(new UnAckedMessageTrackerEnabled(
         100, 100, PulsarFriend::getClientImplPtr(client), static_cast<ConsumerImplBase&>(*consumer3ImplPtr)));
+    consumer3ImplPtr->unAckedMessageTrackerPtr_->start();
 
     int numberOfMessages = 20;
     std::string msgContent = "msg-content";
@@ -1022,67 +1042,101 @@ TEST(ConsumerTest, testRedeliveryOfDecryptionFailedMessages) {
     ASSERT_EQ(ResultOk, client.close());
 }
 
-class ConsumerSeekTest : public ::testing::TestWithParam<bool> {
-   public:
-    void SetUp() override { producerConf_ = ProducerConfiguration().setBatchingEnabled(GetParam()); }
-
-    void TearDown() override { client_.close(); }
-
-   protected:
-    Client client_{lookupUrl};
-    ProducerConfiguration producerConf_;
-};
-
-TEST_P(ConsumerSeekTest, testSeekForMessageId) {
+TEST(ConsumerTest, testPatternSubscribeTopic) {
     Client client(lookupUrl);
+    auto topicName = "testPatternSubscribeTopic" + std::to_string(time(nullptr));
+    std::string topicName1 = "persistent://public/default/" + topicName + "1";
+    std::string topicName2 = "persistent://public/default/" + topicName + "2";
+    std::string topicName3 = "non-persistent://public/default/" + topicName + "3np";
+    // This will not match pattern
+    std::string topicName4 = "persistent://public/default/noMatch" + topicName;
 
-    const std::string topic = "test-seek-for-message-id-" + std::string((GetParam() ? "batch-" : "")) +
-                              std::to_string(time(nullptr));
+    // 0. trigger create topic
+    Producer producer1;
+    Result result = client.createProducer(topicName1, producer1);
+    ASSERT_EQ(ResultOk, result);
+    Producer producer2;
+    result = client.createProducer(topicName2, producer2);
+    ASSERT_EQ(ResultOk, result);
+    Producer producer3;
+    result = client.createProducer(topicName3, producer3);
+    ASSERT_EQ(ResultOk, result);
+    Producer producer4;
+    result = client.createProducer(topicName4, producer4);
+    ASSERT_EQ(ResultOk, result);
 
-    Producer producer;
-    ASSERT_EQ(ResultOk, client.createProducer(topic, producerConf_, producer));
+    // verify sub persistent and non-persistent topic
+    {
+        // 1. Use pattern to sub topic1, topic2, topic3
+        ConsumerConfiguration consConfig;
+        consConfig.setConsumerType(ConsumerShared);
+        consConfig.setRegexSubscriptionMode(RegexSubscriptionMode::AllTopics);
+        Consumer consumer;
+        std::string pattern = "public/default/" + topicName + ".*";
+        ASSERT_EQ(ResultOk, client.subscribeWithRegex(pattern, "sub-all", consConfig, consumer));
+        auto multiConsumerImplPtr = PulsarFriend::getMultiTopicsConsumerImplPtr(consumer);
+        ASSERT_EQ(multiConsumerImplPtr->consumers_.size(), 3);
+        ASSERT_TRUE(multiConsumerImplPtr->consumers_.find(topicName1));
+        ASSERT_TRUE(multiConsumerImplPtr->consumers_.find(topicName2));
+        ASSERT_TRUE(multiConsumerImplPtr->consumers_.find(topicName3));
+        ASSERT_FALSE(multiConsumerImplPtr->consumers_.find(topicName4));
 
-    Consumer consumerExclusive;
-    ASSERT_EQ(ResultOk, client.subscribe(topic, "sub-0", consumerExclusive));
-
-    Consumer consumerInclusive;
-    ASSERT_EQ(ResultOk,
-              client.subscribe(topic, "sub-1", ConsumerConfiguration().setStartMessageIdInclusive(true),
-                               consumerInclusive));
-
-    const auto numMessages = 100;
-    MessageId seekMessageId;
-
-    int r = (rand() % (numMessages - 1));
-    for (int i = 0; i < numMessages; i++) {
-        MessageId id;
-        ASSERT_EQ(ResultOk,
-                  producer.send(MessageBuilder().setContent("msg-" + std::to_string(i)).build(), id));
-
-        if (i == r) {
-            seekMessageId = id;
+        // 2. send msg to topic1, topic2, topic3, topic4
+        int messageNumber = 10;
+        for (int msgNum = 0; msgNum < messageNumber; msgNum++) {
+            auto content = "msg-content" + std::to_string(msgNum);
+            ASSERT_EQ(ResultOk, producer1.send(MessageBuilder().setContent(content).build()));
+            ASSERT_EQ(ResultOk, producer2.send(MessageBuilder().setContent(content).build()));
+            ASSERT_EQ(ResultOk, producer3.send(MessageBuilder().setContent(content).build()));
+            ASSERT_EQ(ResultOk, producer4.send(MessageBuilder().setContent(content).build()));
         }
+
+        // 3. receive msg from topic1, topic2, topic3
+        Message m;
+        for (int i = 0; i < 3 * messageNumber; i++) {
+            ASSERT_EQ(ResultOk, consumer.receive(m, 1000));
+            ASSERT_EQ(ResultOk, consumer.acknowledge(m));
+        }
+        // verify no more to receive, because producer4 not match pattern
+        ASSERT_EQ(ResultTimeout, consumer.receive(m, 1000));
+        ASSERT_EQ(ResultOk, consumer.unsubscribe());
     }
 
-    LOG_INFO("The seekMessageId is: " << seekMessageId << ", r : " << r);
+    // verify only sub persistent topic
+    {
+        ConsumerConfiguration consConfig;
+        consConfig.setConsumerType(ConsumerShared);
+        consConfig.setRegexSubscriptionMode(RegexSubscriptionMode::PersistentOnly);
+        Consumer consumer;
+        std::string pattern = "public/default/" + topicName + ".*";
+        ASSERT_EQ(ResultOk, client.subscribeWithRegex(pattern, "sub-persistent", consConfig, consumer));
+        auto multiConsumerImplPtr = PulsarFriend::getMultiTopicsConsumerImplPtr(consumer);
+        ASSERT_EQ(multiConsumerImplPtr->consumers_.size(), 2);
+        ASSERT_TRUE(multiConsumerImplPtr->consumers_.find(topicName1));
+        ASSERT_TRUE(multiConsumerImplPtr->consumers_.find(topicName2));
+        ASSERT_FALSE(multiConsumerImplPtr->consumers_.find(topicName3));
+        ASSERT_FALSE(multiConsumerImplPtr->consumers_.find(topicName4));
+        ASSERT_EQ(ResultOk, consumer.unsubscribe());
+    }
 
-    consumerExclusive.seek(seekMessageId);
-    Message msg0;
-    ASSERT_EQ(ResultOk, consumerExclusive.receive(msg0, 3000));
+    // verify only sub non-persistent topic
+    {
+        ConsumerConfiguration consConfig;
+        consConfig.setConsumerType(ConsumerShared);
+        consConfig.setRegexSubscriptionMode(RegexSubscriptionMode::NonPersistentOnly);
+        Consumer consumer;
+        std::string pattern = "public/default/" + topicName + ".*";
+        ASSERT_EQ(ResultOk, client.subscribeWithRegex(pattern, "sub-non-persistent", consConfig, consumer));
+        auto multiConsumerImplPtr = PulsarFriend::getMultiTopicsConsumerImplPtr(consumer);
+        ASSERT_EQ(multiConsumerImplPtr->consumers_.size(), 1);
+        ASSERT_FALSE(multiConsumerImplPtr->consumers_.find(topicName1));
+        ASSERT_FALSE(multiConsumerImplPtr->consumers_.find(topicName2));
+        ASSERT_TRUE(multiConsumerImplPtr->consumers_.find(topicName3));
+        ASSERT_FALSE(multiConsumerImplPtr->consumers_.find(topicName4));
+        ASSERT_EQ(ResultOk, consumer.unsubscribe());
+    }
 
-    consumerInclusive.seek(seekMessageId);
-    Message msg1;
-    ASSERT_EQ(ResultOk, consumerInclusive.receive(msg1, 3000));
-
-    LOG_INFO("consumerExclusive received " << msg0.getDataAsString() << " from " << msg0.getMessageId());
-    LOG_INFO("consumerInclusive received " << msg1.getDataAsString() << " from " << msg1.getMessageId());
-
-    ASSERT_EQ(msg0.getDataAsString(), "msg-" + std::to_string(r + 1));
-    ASSERT_EQ(msg1.getDataAsString(), "msg-" + std::to_string(r));
-
-    consumerInclusive.close();
-    consumerExclusive.close();
-    producer.close();
+    client.close();
 }
 
 TEST(ConsumerTest, testNegativeAcksTrackerClose) {
@@ -1110,11 +1164,339 @@ TEST(ConsumerTest, testNegativeAcksTrackerClose) {
 
     consumer.close();
     auto consumerImplPtr = PulsarFriend::getConsumerImplPtr(consumer);
-    ASSERT_TRUE(consumerImplPtr->negativeAcksTracker_.nackedMessages_.empty());
+    ASSERT_TRUE(consumerImplPtr->negativeAcksTracker_->nackedMessages_.empty());
 
     client.close();
 }
 
-INSTANTIATE_TEST_CASE_P(Pulsar, ConsumerSeekTest, ::testing::Values(true, false));
+TEST(ConsumerTest, testAckNotPersistentTopic) {
+    Client client(lookupUrl);
+    auto topicName = "non-persistent://public/default/testAckNotPersistentTopic";
+
+    Consumer consumer;
+    client.subscribe(topicName, "test-sub", consumer);
+
+    Producer producer;
+    client.createProducer(topicName, producer);
+
+    for (int i = 0; i < 10; ++i) {
+        producer.send(MessageBuilder().setContent(std::to_string(i)).build());
+    }
+
+    Message msg;
+    for (int i = 0; i < 10; ++i) {
+        ASSERT_EQ(ResultOk, consumer.receive(msg));
+        ASSERT_EQ(ResultOk, consumer.acknowledge(msg));
+    }
+
+    client.close();
+}
+
+class InterceptorForNegAckDeadlock : public ConsumerInterceptor {
+   public:
+    Message beforeConsume(const Consumer& consumer, const Message& message) override { return message; }
+
+    void onAcknowledge(const Consumer& consumer, Result result, const MessageId& messageID) override {}
+
+    void onAcknowledgeCumulative(const Consumer& consumer, Result result,
+                                 const MessageId& messageID) override {}
+
+    void onNegativeAcksSend(const Consumer& consumer, const std::set<MessageId>& messageIds) override {
+        duringNegativeAck_ = true;
+        // Wait for the next time Consumer::negativeAcknowledge is called
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        std::lock_guard<std::mutex> lock{mutex_};
+        LOG_INFO("onNegativeAcksSend is called for " << consumer.getTopic());
+        duringNegativeAck_ = false;
+    }
+
+    static std::mutex mutex_;
+    static std::atomic_bool duringNegativeAck_;
+};
+
+std::mutex InterceptorForNegAckDeadlock::mutex_;
+std::atomic_bool InterceptorForNegAckDeadlock::duringNegativeAck_{false};
+
+// For https://github.com/apache/pulsar-client-cpp/issues/265
+TEST(ConsumerTest, testNegativeAckDeadlock) {
+    const std::string topic = "test-negative-ack-deadlock";
+    Client client{lookupUrl};
+    ConsumerConfiguration conf;
+    conf.setNegativeAckRedeliveryDelayMs(500);
+    conf.intercept({std::make_shared<InterceptorForNegAckDeadlock>()});
+    Consumer consumer;
+    ASSERT_EQ(ResultOk, client.subscribe(topic, "sub", conf, consumer));
+
+    Producer producer;
+    ASSERT_EQ(ResultOk, client.createProducer(topic, producer));
+    producer.send(MessageBuilder().setContent("msg").build());
+
+    Message msg;
+    ASSERT_EQ(ResultOk, consumer.receive(msg));
+
+    auto& duringNegativeAck = InterceptorForNegAckDeadlock::duringNegativeAck_;
+    duringNegativeAck = false;
+    consumer.negativeAcknowledge(msg);  // schedule the negative ack timer
+    // Wait until the negative ack timer is triggered and onNegativeAcksSend will be called
+    for (int i = 0; !duringNegativeAck && i < 100; i++) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    ASSERT_TRUE(duringNegativeAck);
+
+    {
+        std::lock_guard<std::mutex> lock{InterceptorForNegAckDeadlock::mutex_};
+        consumer.negativeAcknowledge(msg);
+    }
+    for (int i = 0; duringNegativeAck && i < 100; i++) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    ASSERT_FALSE(duringNegativeAck);
+
+    client.close();
+}
+
+TEST(ConsumerTest, testNotSetSubscriptionName) {
+    const std::string topic = "test-not-set-sub-name";
+    Client client{lookupUrl};
+    ConsumerConfiguration conf;
+    Consumer consumer;
+    ASSERT_EQ(ResultInvalidConfiguration, client.subscribe(topic, "", conf, consumer));
+
+    client.close();
+}
+
+TEST(ConsumerTest, testRetrySubscribe) {
+    Client client{lookupUrl};
+    for (int i = 0; i < 10; i++) {
+        // "Subscription is fenced" error might happen here because the previous seek operation might not be
+        // done in broker, the consumer should retry until timeout
+        Consumer consumer;
+        ASSERT_EQ(client.subscribe("test-close-before-seek-done", "sub", consumer), ResultOk);
+        consumer.seekAsync(MessageId::earliest(), [](Result) {});
+        consumer.close();
+    }
+    // TODO: Currently it's hard to test the timeout error without configuring the operation timeout in
+    // milliseconds
+}
+
+TEST(ConsumerTest, testNoListenerThreadBlocking) {
+    Client client{lookupUrl};
+
+    const int numPartitions = 2;
+    const std::string partitionedTopic = "testNoListenerThreadBlocking-" + std::to_string(time(nullptr));
+    int res =
+        makePutRequest(adminUrl + "admin/v2/persistent/public/default/" + partitionedTopic + "/partitions",
+                       std::to_string(numPartitions));
+    ASSERT_TRUE(res == 204 || res == 409) << "res: " << res;
+
+    const int receiverQueueSize = 1;
+    const int receiverQueueSizeAcrossPartitions = receiverQueueSize * numPartitions;
+
+    Consumer consumer1, consumer2;
+    ConsumerConfiguration consumerConfig;
+    consumerConfig.setReceiverQueueSize(receiverQueueSize);
+    consumerConfig.setMaxTotalReceiverQueueSizeAcrossPartitions(receiverQueueSizeAcrossPartitions);
+    Result consumerResult;
+    consumerResult = client.subscribe(partitionedTopic, "sub1", consumerConfig, consumer1);
+    ASSERT_EQ(consumerResult, ResultOk);
+    consumerResult = client.subscribe(partitionedTopic, "sub2", consumerConfig, consumer2);
+    ASSERT_EQ(consumerResult, ResultOk);
+
+    Producer producer;
+    ProducerConfiguration producerConfig;
+    producerConfig.setBatchingEnabled(false);
+    producerConfig.setPartitionsRoutingMode(ProducerConfiguration::RoundRobinDistribution);
+    Result producerResult = client.createProducer(partitionedTopic, producerConfig, producer);
+    ASSERT_EQ(producerResult, ResultOk);
+
+    const int msgCount = receiverQueueSizeAcrossPartitions * 100;
+
+    for (int i = 0; i < msgCount; ++i) {
+        auto msg = MessageBuilder().setContent("test").build();
+        producer.sendAsync(msg, [](Result code, const MessageId& messageId) {});
+    }
+    producer.flush();
+    producer.close();
+
+    waitUntil(std::chrono::seconds(1), [consumer1] {
+        auto multiConsumerImpl = PulsarFriend::getMultiTopicsConsumerImplPtr(consumer1);
+        return multiConsumerImpl->getNumOfPrefetchedMessages() == receiverQueueSizeAcrossPartitions;
+    });
+
+    // check consumer1 prefetch num
+    auto multiConsumerImpl = PulsarFriend::getMultiTopicsConsumerImplPtr(consumer1);
+    int prefetchNum = multiConsumerImpl->getNumOfPrefetchedMessages();
+    ASSERT_LE(prefetchNum, receiverQueueSizeAcrossPartitions);
+
+    // read consumer2 while consumer1 reaches the prefech limit
+    for (int i = 0; i < msgCount; ++i) {
+        auto multiConsumerImpl = PulsarFriend::getMultiTopicsConsumerImplPtr(consumer2);
+        int prefetchNum = multiConsumerImpl->getNumOfPrefetchedMessages();
+        ASSERT_LE(prefetchNum, receiverQueueSizeAcrossPartitions);
+
+        Message msg;
+        Result ret = consumer2.receive(msg, 1000);
+        ASSERT_EQ(ret, ResultOk);
+        consumer2.acknowledge(msg);
+    }
+
+    consumer2.close();
+    consumer1.close();
+    client.close();
+}
+
+TEST(ConsumerTest, testCloseAfterUnsubscribe) {
+    Client client{lookupUrl};
+    Consumer consumer;
+    ASSERT_EQ(ResultOk, client.subscribe("test-close-after-unsubscribe", "sub", consumer));
+    ASSERT_EQ(ResultOk, consumer.unsubscribe());
+    ASSERT_EQ(ResultOk, consumer.close());
+}
+
+TEST(ConsumerTest, testCloseAgainBeforeCloseDone) {
+    Client client{lookupUrl};
+    Consumer consumer;
+    ASSERT_EQ(ResultOk, client.subscribe("test-close-again-before-close-done", "sub", consumer));
+    auto done = std::make_shared<std::atomic_bool>(false);
+    auto result = std::make_shared<std::atomic<Result>>(ResultOk);
+    consumer.closeAsync([done, result](Result innerResult) {
+        result->store(innerResult);
+        done->store(true);
+    });
+    ASSERT_EQ(ResultOk, consumer.close());
+    ASSERT_FALSE(*done);
+    waitUntil(std::chrono::seconds(3), [done] { return done->load(); });
+    ASSERT_EQ(ResultOk, *result);
+    ASSERT_TRUE(*done);
+}
+
+inline std::string getConsumerName(const std::string& topic) {
+    boost::property_tree::ptree root;
+    const auto error = getTopicStats(topic, root);
+    if (!error.empty()) {
+        LOG_INFO(error);
+        return {};
+    }
+    return root.get_child("subscriptions")
+        .get_child("sub")
+        .get_child("consumers")
+        .front()
+        .second.get<std::string>("consumerName");
+}
+
+TEST(ConsumerTest, testConsumerName) {
+    Client client{lookupUrl};
+    Consumer consumer;
+    ASSERT_TRUE(consumer.getConsumerName().empty());
+    const auto topic1 = "consumer-test-consumer-name-1";
+    const auto topic2 = "consumer-test-consumer-name-2";
+
+    // Default consumer name
+    ASSERT_EQ(ResultOk, client.subscribe(topic1, "sub", consumer));
+    LOG_INFO("Random consumer name: " << consumer.getConsumerName());
+    ASSERT_FALSE(consumer.getConsumerName().empty());  // a random name
+    ASSERT_EQ(consumer.getConsumerName(), getConsumerName(topic1));
+    consumer.close();
+
+    // Single-topic consumer
+    ConsumerConfiguration conf;
+    const std::string consumerName = "custom-consumer";
+    conf.setConsumerName(consumerName);
+    ASSERT_EQ(ResultOk, client.subscribe(topic1, "sub", conf, consumer));
+    ASSERT_EQ(consumerName, consumer.getConsumerName());
+    ASSERT_EQ(consumerName, getConsumerName(topic1));
+    consumer.close();
+
+    // Multi-topics consumer
+    ASSERT_EQ(ResultOk, client.subscribe(std::vector<std::string>{topic1, topic2}, "sub", conf, consumer));
+    ASSERT_EQ(consumerName, consumer.getConsumerName());
+    ASSERT_EQ(consumerName, getConsumerName(topic1));
+    ASSERT_EQ(consumerName, getConsumerName(topic2));
+
+    client.close();
+}
+
+TEST(ConsumerTest, testSNIProxyConnect) {
+    ClientConfiguration clientConfiguration;
+    clientConfiguration.setProxyServiceUrl(lookupUrl);
+    clientConfiguration.setProxyProtocol(ClientConfiguration::SNI);
+
+    Client client(lookupUrl, clientConfiguration);
+    const std::string topic = "testSNIProxy-" + std::to_string(time(nullptr));
+
+    Consumer consumer;
+    ASSERT_EQ(ResultOk, client.subscribe(topic, "test-sub", consumer));
+    client.close();
+}
+
+TEST(ConsumerTest, testMultiConsumerListenerAndAck) {
+    Client client{lookupUrl};
+
+    const std::string topicName = "testConsumerEventWithPartition-topic-" + std::to_string(time(nullptr));
+    int res = makePutRequest(adminUrl + "admin/v2/persistent/public/default/" + topicName + "/partitions",
+                             std::to_string(5));
+    ASSERT_TRUE(res == 204 || res == 409) << "res: " << res;
+
+    // Create a producer
+    Producer producer;
+    ASSERT_EQ(ResultOk, client.createProducer(topicName, producer));
+
+    int num = 10;
+    // Use listener to consume
+    Latch latch{num};
+    Consumer consumer;
+    ConsumerConfiguration consumerConfiguration;
+    PulsarFriend::setConsumerUnAckMessagesTimeoutMs(consumerConfiguration, 2000);
+    consumerConfiguration.setMessageListener([&latch](Consumer& consumer, const Message& msg) {
+        LOG_INFO("Received message '" << msg.getDataAsString() << "' and ack it");
+        consumer.acknowledge(msg);
+        latch.countdown();
+    });
+    ASSERT_EQ(ResultOk, client.subscribe(topicName, "consumer-1", consumerConfiguration, consumer));
+
+    // Send synchronously
+    for (int i = 0; i < 10; ++i) {
+        Message msg = MessageBuilder().setContent("content" + std::to_string(i)).build();
+        Result result = producer.send(msg);
+        LOG_INFO("Message sent: " << result);
+    }
+
+    ASSERT_TRUE(latch.wait(std::chrono::seconds(5)));
+    auto multiConsumerImplPtr = PulsarFriend::getMultiTopicsConsumerImplPtr(consumer);
+    auto tracker =
+        static_cast<UnAckedMessageTrackerEnabled*>(multiConsumerImplPtr->unAckedMessageTrackerPtr_.get());
+    ASSERT_EQ(0, tracker->size());
+
+    client.close();
+}
+
+// When a consumer starts grabbing the connection, it registers a timer after the operation timeout. When that
+// timer is expired, it will fail the connection and cancel the connection timer. However, it results a race
+// condition that:
+//   1. The consumer's connection is closed (e.g. the keep alive timer failed)
+//   2. The connection timer is registered on the executor and will trigger the reconnection after 100ms
+//   3. The connection timer is cancelled, then the reconnection won't start.
+TEST(ConsumerTest, testReconnectWhenFirstConnectTimedOut) {
+    ClientConfiguration conf;
+    conf.setOperationTimeoutSeconds(1);
+    Client client{lookupUrl, conf};
+
+    auto topic = "consumer-test-reconnect-when-first-connect-timed-out" + std::to_string(time(nullptr));
+    Consumer consumer;
+    ASSERT_EQ(ResultOk, client.subscribe(topic, "sub", consumer));
+
+    auto timer = ConsumerTest::scheduleCloseConnection(consumer, std::chrono::seconds(1));
+    ASSERT_TRUE(timer != nullptr);
+    timer->wait();
+
+    Producer producer;
+    ASSERT_EQ(ResultOk, client.createProducer(topic, producer));
+    ASSERT_EQ(ResultOk, producer.send(MessageBuilder().setContent("msg").build()));
+
+    Message msg;
+    ASSERT_EQ(ResultOk, consumer.receive(msg, 3000));
+    ASSERT_EQ("msg", msg.getDataAsString());
+    client.close();
+}
 
 }  // namespace pulsar

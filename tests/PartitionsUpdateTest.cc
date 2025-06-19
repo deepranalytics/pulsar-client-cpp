@@ -50,7 +50,7 @@ class PartitionsSet {
    public:
     size_t size() const { return names_.size(); }
 
-    Result initProducer(std::string topicName, bool enablePartitionsUpdate,
+    Result initProducer(const std::string& topicName, bool enablePartitionsUpdate,
                         bool lazyStartPartitionedProducers) {
         clientForProducer_.reset(new Client(serviceUrl, newClientConfig(enablePartitionsUpdate)));
         const auto producerConfig = ProducerConfiguration()
@@ -59,7 +59,7 @@ class PartitionsSet {
         return clientForProducer_->createProducer(topicName, producerConfig, producer_);
     }
 
-    Result initConsumer(std::string topicName, bool enablePartitionsUpdate) {
+    Result initConsumer(const std::string& topicName, bool enablePartitionsUpdate) {
         clientForConsumer_.reset(new Client(serviceUrl, newClientConfig(enablePartitionsUpdate)));
         return clientForConsumer_->subscribe(topicName, "SubscriptionName", consumer_);
     }
@@ -101,6 +101,11 @@ static void waitForPartitionsUpdated() {
     std::this_thread::sleep_for(std::chrono::seconds(3));
 }
 
+static void waitForPartitionUpdateTaskRunMultipleTimes() {
+    // Assume runPartitionUpdateTask run more than one time in 2 seconds if enabled
+    std::this_thread::sleep_for(std::chrono::seconds(2));
+}
+
 TEST(PartitionsUpdateTest, testConfigPartitionsUpdateInterval) {
     ClientConfiguration clientConfig;
     ASSERT_EQ(60, clientConfig.getPartitionsUpdateInterval());
@@ -115,7 +120,7 @@ TEST(PartitionsUpdateTest, testConfigPartitionsUpdateInterval) {
     ASSERT_EQ(static_cast<unsigned int>(-1), clientConfig.getPartitionsUpdateInterval());
 }
 
-void testPartitionsUpdate(bool lazyStartPartitionedProducers, std::string topicNameSuffix) {
+void testPartitionsUpdate(bool lazyStartPartitionedProducers, const std::string& topicNameSuffix) {
     std::string topicName = "persistent://" + topicNameSuffix;
     std::string topicOperateUrl = adminUrl + "admin/v2/persistent/" + topicNameSuffix + "/partitions";
 
@@ -131,6 +136,7 @@ void testPartitionsUpdate(bool lazyStartPartitionedProducers, std::string topicN
     ASSERT_EQ(ResultOk, partitionsSet.initProducer(topicName, true, lazyStartPartitionedProducers));
     ASSERT_EQ(ResultOk, partitionsSet.initConsumer(topicName, true));
 
+    waitForPartitionUpdateTaskRunMultipleTimes();
     res = makePostRequest(topicOperateUrl, "3");  // update partitions to 3
     ASSERT_TRUE(res == 204 || res == 409) << "res: " << res;
     waitForPartitionsUpdated();
@@ -143,6 +149,7 @@ void testPartitionsUpdate(bool lazyStartPartitionedProducers, std::string topicN
     ASSERT_EQ(ResultOk, partitionsSet.initProducer(topicName, true, false));
     ASSERT_EQ(ResultOk, partitionsSet.initConsumer(topicName, false));
 
+    waitForPartitionUpdateTaskRunMultipleTimes();
     res = makePostRequest(topicOperateUrl, "5");  // update partitions to 5
     ASSERT_TRUE(res == 204 || res == 409) << "res: " << res;
     waitForPartitionsUpdated();
@@ -155,6 +162,7 @@ void testPartitionsUpdate(bool lazyStartPartitionedProducers, std::string topicN
     ASSERT_EQ(ResultOk, partitionsSet.initProducer(topicName, false, false));
     ASSERT_EQ(ResultOk, partitionsSet.initConsumer(topicName, true));
 
+    waitForPartitionUpdateTaskRunMultipleTimes();
     res = makePostRequest(topicOperateUrl, "7");  // update partitions to 7
     ASSERT_TRUE(res == 204 || res == 409) << "res: " << res;
     waitForPartitionsUpdated();
@@ -167,6 +175,7 @@ void testPartitionsUpdate(bool lazyStartPartitionedProducers, std::string topicN
     ASSERT_EQ(ResultOk, partitionsSet.initProducer(topicName, false, false));
     ASSERT_EQ(ResultOk, partitionsSet.initConsumer(topicName, false));
 
+    waitForPartitionUpdateTaskRunMultipleTimes();
     res = makePostRequest(topicOperateUrl, "10");  // update partitions to 10
     ASSERT_TRUE(res == 204 || res == 409) << "res: " << res;
     waitForPartitionsUpdated();

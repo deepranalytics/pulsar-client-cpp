@@ -164,7 +164,7 @@ std::string TopicName::getLocalName() { return localName_; }
 
 std::string TopicName::getEncodedLocalName() const { return getEncodedName(localName_); }
 
-bool TopicName::operator==(const TopicName& other) {
+bool TopicName::operator==(const TopicName& other) const {
     return (this->topicName_.compare(other.topicName_) == 0);
 }
 
@@ -255,5 +255,17 @@ int TopicName::getPartitionIndex(const std::string& topic) {
 }
 
 NamespaceNamePtr TopicName::getNamespaceName() { return namespaceName_; }
+
+std::string TopicName::removeDomain(const std::string& topicName) {
+    auto index = topicName.find("://");
+    if (index != std::string::npos) {
+        return topicName.substr(index + 3, topicName.length());
+    }
+    return topicName;
+}
+
+bool TopicName::containsDomain(const std::string& topicName) {
+    return topicName.find("://") != std::string::npos;
+}
 
 }  // namespace pulsar

@@ -18,8 +18,7 @@
  */
 #include "RoundRobinMessageRouter.h"
 
-#include <boost/random/mersenne_twister.hpp>
-#include <boost/random/uniform_int_distribution.hpp>
+#include <random>
 
 #include "Hash.h"
 #include "TimeUtils.h"
@@ -27,8 +26,7 @@
 namespace pulsar {
 RoundRobinMessageRouter::RoundRobinMessageRouter(ProducerConfiguration::HashingScheme hashingScheme,
                                                  bool batchingEnabled, uint32_t maxBatchingMessages,
-                                                 uint32_t maxBatchingSize,
-                                                 boost::posix_time::time_duration maxBatchingDelay)
+                                                 uint32_t maxBatchingSize, TimeDuration maxBatchingDelay)
     : MessageRouterBase(hashingScheme),
       batchingEnabled_(batchingEnabled),
       maxBatchingMessages_(maxBatchingMessages),
@@ -37,8 +35,8 @@ RoundRobinMessageRouter::RoundRobinMessageRouter(ProducerConfiguration::HashingS
       lastPartitionChange_(TimeUtils::currentTimeMillis()),
       msgCounter_(0),
       cumulativeBatchSize_(0) {
-    boost::random::mt19937 rng(time(nullptr));
-    boost::random::uniform_int_distribution<int> dist;
+    std::mt19937 rng(time(nullptr));
+    std::uniform_int_distribution<int> dist;
     currentPartitionCursor_ = dist(rng);
 }
 
@@ -75,7 +73,7 @@ int RoundRobinMessageRouter::getPartition(const Message& msg, const TopicMetadat
     int64_t now = TimeUtils::currentTimeMillis();
 
     if (messageCount >= maxBatchingMessages_ || (messageSize >= maxBatchingSize_ - batchSize) ||
-        (now - lastPartitionChange >= maxBatchingDelay_.total_milliseconds())) {
+        (now - lastPartitionChange >= toMillis(maxBatchingDelay_))) {
         uint32_t currentPartitionCursor = ++currentPartitionCursor_;
         lastPartitionChange_ = now;
         cumulativeBatchSize_ = messageSize;

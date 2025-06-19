@@ -173,8 +173,7 @@ void pulsar_client_configuration_set_stats_interval_in_seconds(pulsar_client_con
     conf->conf.setStatsIntervalInSeconds(interval);
 }
 
-const unsigned int pulsar_client_configuration_get_stats_interval_in_seconds(
-    pulsar_client_configuration_t *conf) {
+unsigned int pulsar_client_configuration_get_stats_interval_in_seconds(pulsar_client_configuration_t *conf) {
     return conf->conf.getStatsIntervalInSeconds();
 }
 
@@ -188,4 +187,32 @@ void pulsar_client_configuration_set_memory_limit(pulsar_client_configuration_t 
  */
 unsigned long long pulsar_client_configuration_get_memory_limit(pulsar_client_configuration_t *conf) {
     return conf->conf.getMemoryLimit();
+}
+
+void pulsar_client_configuration_set_listener_name(pulsar_client_configuration_t *conf,
+                                                   const char *listenerName) {
+    conf->conf.setListenerName(listenerName);
+}
+
+const char *pulsar_client_configuration_get_listener_name(pulsar_client_configuration_t *conf) {
+    return conf->conf.getListenerName().c_str();
+}
+
+void pulsar_client_configuration_set_partitions_update_interval(pulsar_client_configuration_t *conf,
+                                                                const unsigned int intervalInSeconds) {
+    conf->conf.setPartititionsUpdateInterval(intervalInSeconds);
+}
+
+unsigned int pulsar_client_configuration_get_partitions_update_interval(pulsar_client_configuration_t *conf) {
+    return conf->conf.getPartitionsUpdateInterval();
+}
+
+void pulsar_client_configuration_set_keep_alive_interval_in_seconds(pulsar_client_configuration_t *conf,
+                                                                    unsigned int keepAliveIntervalInSeconds) {
+    conf->conf.setKeepAliveIntervalInSeconds(keepAliveIntervalInSeconds);
+}
+
+unsigned int pulsar_client_configuration_get_keep_alive_interval_in_seconds(
+    pulsar_client_configuration_t *conf) {
+    return conf->conf.getKeepAliveIntervalInSeconds();
 }

@@ -22,7 +22,8 @@
 #include "BrokerConsumerStatsImplBase.h"
 
 namespace pulsar {
-BrokerConsumerStats::BrokerConsumerStats(std::shared_ptr<BrokerConsumerStatsImplBase> impl) : impl_(impl) {}
+BrokerConsumerStats::BrokerConsumerStats(std::shared_ptr<BrokerConsumerStatsImplBase> impl)
+    : impl_(std::move(impl)) {}
 
 std::shared_ptr<BrokerConsumerStatsImplBase> BrokerConsumerStats::getImpl() const { return impl_; }
 
@@ -63,7 +64,7 @@ const std::string BrokerConsumerStats::getAddress() const { return impl_->getAdd
 
 const std::string BrokerConsumerStats::getConnectedSince() const { return impl_->getConnectedSince(); }
 
-const ConsumerType BrokerConsumerStats::getType() const { return impl_->getType(); }
+ConsumerType BrokerConsumerStats::getType() const { return impl_->getType(); }
 
 double BrokerConsumerStats::getMsgRateExpired() const { return impl_->getMsgRateExpired(); }
 

@@ -31,6 +31,7 @@
 namespace pulsar {
 namespace proto {
 class CommandMessage;
+class BrokerEntryMetadata;
 class MessageMetadata;
 class SingleMessageMetadata;
 }  // namespace proto
@@ -125,6 +126,12 @@ class PULSAR_PUBLIC Message {
     void setMessageId(const MessageId& messageId) const;
 
     /**
+     * Get the index of this message, if it doesn't exist, return -1
+     * @return
+     */
+    int64_t getIndex() const;
+
+    /**
      * Get the partition key for this message
      * @return key string that is hashed to determine message's topic partition
      */
@@ -169,7 +176,7 @@ class PULSAR_PUBLIC Message {
     /**
      * Get the redelivery count for this message
      */
-    const int getRedeliveryCount() const;
+    int getRedeliveryCount() const;
 
     /**
      * Check if schema version exists
@@ -177,7 +184,14 @@ class PULSAR_PUBLIC Message {
     bool hasSchemaVersion() const;
 
     /**
-     * Get the schema version
+     * Get the schema version.
+     *
+     * @return the the schema version on success or -1 if the message does not have the schema version
+     */
+    int64_t getLongSchemaVersion() const;
+
+    /**
+     * Get the schema version of the raw bytes.
      */
     const std::string& getSchemaVersion() const;
 
@@ -188,10 +202,12 @@ class PULSAR_PUBLIC Message {
     MessageImplPtr impl_;
 
     Message(MessageImplPtr& impl);
-    Message(const MessageId& messageId, proto::MessageMetadata& metadata, SharedBuffer& payload);
+    Message(const MessageId& messageId, proto::BrokerEntryMetadata& brokerEntryMetadata,
+            proto::MessageMetadata& metadata, SharedBuffer& payload);
     /// Used for Batch Messages
-    Message(const MessageId& messageId, proto::MessageMetadata& metadata, SharedBuffer& payload,
-            proto::SingleMessageMetadata& singleMetadata, const std::string& topicName);
+    Message(const MessageId& messageId, proto::BrokerEntryMetadata& brokerEntryMetadata,
+            proto::MessageMetadata& metadata, SharedBuffer& payload,
+            proto::SingleMessageMetadata& singleMetadata, const std::shared_ptr<std::string>& topicName);
     friend class PartitionedProducerImpl;
     friend class MultiTopicsConsumerImpl;
     friend class MessageBuilder;

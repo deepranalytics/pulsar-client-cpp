@@ -16,36 +16,27 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-#pragma once
-
-#include <pulsar/ConsumerConfiguration.h>  // for ResultCallback
-
-#include <atomic>
-#include <memory>
+#ifndef PULSAR_CPP_REGEX_SUB_MODE_H
+#define PULSAR_CPP_REGEX_SUB_MODE_H
 
 namespace pulsar {
+enum RegexSubscriptionMode
+{
+    /**
+     * Only subscribe to persistent topics.
+     */
+    PersistentOnly = 0,
 
-class MultiResultCallback {
-   public:
-    MultiResultCallback(ResultCallback callback, int numToComplete)
-        : callback_(callback),
-          numToComplete_(numToComplete),
-          numCompletedPtr_(std::make_shared<std::atomic_int>(0)) {}
+    /**
+     * Only subscribe to non-persistent topics.
+     */
+    NonPersistentOnly = 1,
 
-    void operator()(Result result) {
-        if (result == ResultOk) {
-            if (++(*numCompletedPtr_) == numToComplete_) {
-                callback_(result);
-            }
-        } else {
-            callback_(result);
-        }
-    }
-
-   private:
-    ResultCallback callback_;
-    const int numToComplete_;
-    const std::shared_ptr<std::atomic_int> numCompletedPtr_;
+    /**
+     * Subscribe to both persistent and non-persistent topics.
+     */
+    AllTopics = 2
 };
+}
 
-}  // namespace pulsar
+#endif  // PULSAR_CPP_REGEX_SUB_MODE_H

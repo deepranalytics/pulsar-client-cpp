@@ -20,6 +20,7 @@
 #include "AckGroupingTrackerEnabled.h"
 
 #include <climits>
+#include <memory>
 #include <mutex>
 
 #include "ClientConnection.h"
@@ -27,12 +28,9 @@
 #include "Commands.h"
 #include "ExecutorService.h"
 #include "HandlerBase.h"
-#include "LogUtils.h"
 #include "MessageIdUtil.h"
 
 namespace pulsar {
-
-DECLARE_LOG_OBJECT();
 
 // Define a customized compare logic whose difference with the default compare logic of MessageId is:
 // When two MessageId objects are in the same entry, if only one of them is a message in the batch, treat
@@ -45,27 +43,6 @@ static int compare(const MessageId& lhs, const MessageId& rhs) {
         return internal::compare(lhs.batchIndex() < 0 ? INT_MAX : lhs.batchIndex(),
                                  rhs.batchIndex() < 0 ? INT_MAX : rhs.batchIndex());
     }
-}
-
-AckGroupingTrackerEnabled::AckGroupingTrackerEnabled(ClientImplPtr clientPtr,
-                                                     const HandlerBasePtr& handlerPtr, uint64_t consumerId,
-                                                     long ackGroupingTimeMs, long ackGroupingMaxSize)
-    : AckGroupingTracker(),
-      isClosed_(false),
-      handlerWeakPtr_(handlerPtr),
-      consumerId_(consumerId),
-      nextCumulativeAckMsgId_(MessageId::earliest()),
-      requireCumulativeAck_(false),
-      mutexCumulativeAckMsgId_(),
-      pendingIndividualAcks_(),
-      rmutexPendingIndAcks_(),
-      ackGroupingTimeMs_(ackGroupingTimeMs),
-      ackGroupingMaxSize_(ackGroupingMaxSize),
-      executor_(clientPtr->getIOExecutorProvider()->get()),
-      timer_(),
-      mutexTimer_() {
-    LOG_DEBUG("ACK grouping is enabled, grouping time " << ackGroupingTimeMs << "ms, grouping max size "
-                                                        << ackGroupingMaxSize);
 }
 
 void AckGroupingTrackerEnabled::start() { this->scheduleTimer(); }
@@ -84,64 +61,79 @@ bool AckGroupingTrackerEnabled::isDuplicate(const MessageId& msgId) {
     return this->pendingIndividualAcks_.count(msgId) > 0;
 }
 
-void AckGroupingTrackerEnabled::addAcknowledge(const MessageId& msgId) {
+void AckGroupingTrackerEnabled::addAcknowledge(const MessageId& msgId, const ResultCallback& callback) {
     std::lock_guard<std::recursive_mutex> lock(this->rmutexPendingIndAcks_);
     this->pendingIndividualAcks_.insert(msgId);
+    if (waitResponse_) {
+        this->pendingIndividualCallbacks_.emplace_back(callback);
+    } else if (callback) {
+        callback(ResultOk);
+    }
     if (this->ackGroupingMaxSize_ > 0 && this->pendingIndividualAcks_.size() >= this->ackGroupingMaxSize_) {
         this->flush();
     }
 }
 
-void AckGroupingTrackerEnabled::addAcknowledgeList(const MessageIdList& msgIds) {
+void AckGroupingTrackerEnabled::addAcknowledgeList(const MessageIdList& msgIds,
+                                                   const ResultCallback& callback) {
     std::lock_guard<std::recursive_mutex> lock(this->rmutexPendingIndAcks_);
     for (const auto& msgId : msgIds) {
         this->pendingIndividualAcks_.emplace(msgId);
     }
+    if (waitResponse_) {
+        this->pendingIndividualCallbacks_.emplace_back(callback);
+    } else if (callback) {
+        callback(ResultOk);
+    }
     if (this->ackGroupingMaxSize_ > 0 && this->pendingIndividualAcks_.size() >= this->ackGroupingMaxSize_) {
         this->flush();
     }
 }
 
-void AckGroupingTrackerEnabled::addAcknowledgeCumulative(const MessageId& msgId) {
-    std::lock_guard<std::mutex> lock(this->mutexCumulativeAckMsgId_);
+void AckGroupingTrackerEnabled::addAcknowledgeCumulative(const MessageId& msgId,
+                                                         const ResultCallback& callback) {
+    std::unique_lock<std::mutex> lock(this->mutexCumulativeAckMsgId_);
+    bool completeCallback = true;
     if (compare(msgId, this->nextCumulativeAckMsgId_) > 0) {
         this->nextCumulativeAckMsgId_ = msgId;
         this->requireCumulativeAck_ = true;
+        // Trigger the previous pending callback
+        if (latestCumulativeCallback_) {
+            latestCumulativeCallback_(ResultOk);
+        }
+        if (waitResponse_) {
+            // Move the callback to latestCumulativeCallback_ so that it will be triggered when receiving the
+            // AckResponse or being replaced by a newer MessageId
+            latestCumulativeCallback_ = callback;
+            completeCallback = false;
+        } else {
+            latestCumulativeCallback_ = nullptr;
+        }
+    }
+    lock.unlock();
+    if (callback && completeCallback) {
+        callback(ResultOk);
     }
 }
 
-void AckGroupingTrackerEnabled::close() {
+AckGroupingTrackerEnabled::~AckGroupingTrackerEnabled() {
     isClosed_ = true;
     this->flush();
     std::lock_guard<std::mutex> lock(this->mutexTimer_);
     if (this->timer_) {
-        boost::system::error_code ec;
+        ASIO_ERROR ec;
         this->timer_->cancel(ec);
     }
 }
 
 void AckGroupingTrackerEnabled::flush() {
-    auto handler = handlerWeakPtr_.lock();
-    if (!handler) {
-        LOG_DEBUG("Reference to the HandlerBase is not valid.");
-        return;
-    }
-    auto cnx = handler->getCnx().lock();
-    if (cnx == nullptr) {
-        LOG_DEBUG("Connection is not ready, grouping ACK failed.");
-        return;
-    }
-
     // Send ACK for cumulative ACK requests.
     {
         std::lock_guard<std::mutex> lock(this->mutexCumulativeAckMsgId_);
         if (this->requireCumulativeAck_) {
-            if (!this->doImmediateAck(cnx, this->consumerId_, this->nextCumulativeAckMsgId_,
-                                      CommandAck_AckType_Cumulative)) {
-                // Failed to send ACK.
-                LOG_WARN("Failed to send cumulative ACK.");
-                return;
-            }
+            this->doImmediateAck(this->nextCumulativeAckMsgId_, this->latestCumulativeCallback_,
+                                 CommandAck_AckType_Cumulative);
+            this->latestCumulativeCallback_ = nullptr;
             this->requireCumulativeAck_ = false;
         }
     }
@@ -149,7 +141,14 @@ void AckGroupingTrackerEnabled::flush() {
     // Send ACK for individual ACK requests.
     std::lock_guard<std::recursive_mutex> lock(this->rmutexPendingIndAcks_);
     if (!this->pendingIndividualAcks_.empty()) {
-        this->doImmediateAck(cnx, consumerId_, this->pendingIndividualAcks_);
+        std::vector<ResultCallback> callbacks;
+        callbacks.swap(this->pendingIndividualCallbacks_);
+        auto callback = [callbacks](Result result) {
+            for (auto&& callback : callbacks) {
+                callback(result);
+            }
+        };
+        this->doImmediateAck(this->pendingIndividualAcks_, callback);
         this->pendingIndividualAcks_.clear();
     }
 }
@@ -159,6 +158,7 @@ void AckGroupingTrackerEnabled::flushAndClean() {
     {
         std::lock_guard<std::mutex> lock(this->mutexCumulativeAckMsgId_);
         this->nextCumulativeAckMsgId_ = MessageId::earliest();
+        this->latestCumulativeCallback_ = nullptr;
         this->requireCumulativeAck_ = false;
     }
     std::lock_guard<std::recursive_mutex> lock(this->rmutexPendingIndAcks_);
@@ -172,10 +172,11 @@ void AckGroupingTrackerEnabled::scheduleTimer() {
 
     std::lock_guard<std::mutex> lock(this->mutexTimer_);
     this->timer_ = this->executor_->createDeadlineTimer();
-    this->timer_->expires_from_now(boost::posix_time::milliseconds(std::max(1L, this->ackGroupingTimeMs_)));
-    auto self = shared_from_this();
-    this->timer_->async_wait([this, self](const boost::system::error_code& ec) -> void {
-        if (!ec) {
+    this->timer_->expires_from_now(std::chrono::milliseconds(std::max(1L, this->ackGroupingTimeMs_)));
+    std::weak_ptr<AckGroupingTracker> weakSelf = shared_from_this();
+    this->timer_->async_wait([this, weakSelf](const ASIO_ERROR& ec) -> void {
+        auto self = weakSelf.lock();
+        if (self && !ec) {
             this->flush();
             this->scheduleTimer();
         }

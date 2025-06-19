@@ -66,7 +66,7 @@ ConsumerConfiguration& ConsumerConfiguration::setConsumerType(ConsumerType consu
 ConsumerType ConsumerConfiguration::getConsumerType() const { return impl_->consumerType; }
 
 ConsumerConfiguration& ConsumerConfiguration::setMessageListener(MessageListener messageListener) {
-    impl_->messageListener = messageListener;
+    impl_->messageListener = std::move(messageListener);
     impl_->hasMessageListener = true;
     return *this;
 }
@@ -77,7 +77,7 @@ bool ConsumerConfiguration::hasMessageListener() const { return impl_->hasMessag
 
 ConsumerConfiguration& ConsumerConfiguration::setConsumerEventListener(
     ConsumerEventListenerPtr eventListener) {
-    impl_->eventListener = eventListener;
+    impl_->eventListener = std::move(eventListener);
     impl_->hasConsumerEventListener = true;
     return *this;
 }
@@ -147,7 +147,7 @@ bool ConsumerConfiguration::isEncryptionEnabled() const { return (impl_->cryptoK
 const CryptoKeyReaderPtr ConsumerConfiguration::getCryptoKeyReader() const { return impl_->cryptoKeyReader; }
 
 ConsumerConfiguration& ConsumerConfiguration::setCryptoKeyReader(CryptoKeyReaderPtr cryptoKeyReader) {
-    impl_->cryptoKeyReader = cryptoKeyReader;
+    impl_->cryptoKeyReader = std::move(cryptoKeyReader);
     return *this;
 }
 
@@ -238,7 +238,7 @@ ConsumerConfiguration& ConsumerConfiguration::setPriorityLevel(int priorityLevel
 
 int ConsumerConfiguration::getPriorityLevel() const { return impl_->priorityLevel; }
 
-ConsumerConfiguration& ConsumerConfiguration::setKeySharedPolicy(KeySharedPolicy keySharedPolicy) {
+ConsumerConfiguration& ConsumerConfiguration::setKeySharedPolicy(const KeySharedPolicy& keySharedPolicy) {
     impl_->keySharedPolicy = keySharedPolicy.clone();
     return *this;
 }
@@ -299,5 +299,39 @@ void ConsumerConfiguration::setDeadLetterPolicy(const DeadLetterPolicy& deadLett
 }
 
 const DeadLetterPolicy& ConsumerConfiguration::getDeadLetterPolicy() const { return impl_->deadLetterPolicy; }
+
+ConsumerConfiguration& ConsumerConfiguration::intercept(
+    const std::vector<ConsumerInterceptorPtr>& interceptors) {
+    impl_->interceptors.insert(impl_->interceptors.end(), interceptors.begin(), interceptors.end());
+    return *this;
+}
+
+const std::vector<ConsumerInterceptorPtr>& ConsumerConfiguration::getInterceptors() const {
+    return impl_->interceptors;
+}
+
+ConsumerConfiguration& ConsumerConfiguration::setAckReceiptEnabled(bool ackReceiptEnabled) {
+    impl_->ackReceiptEnabled = ackReceiptEnabled;
+    return *this;
+}
+
+bool ConsumerConfiguration::isAckReceiptEnabled() const { return impl_->ackReceiptEnabled; }
+
+ConsumerConfiguration& ConsumerConfiguration::setStartPaused(bool startPaused) {
+    impl_->startPaused = startPaused;
+    return *this;
+}
+
+bool ConsumerConfiguration::isStartPaused() const { return impl_->startPaused; }
+
+ConsumerConfiguration& ConsumerConfiguration::setRegexSubscriptionMode(
+    RegexSubscriptionMode regexSubscriptionMode) {
+    impl_->regexSubscriptionMode = regexSubscriptionMode;
+    return *this;
+}
+
+RegexSubscriptionMode ConsumerConfiguration::getRegexSubscriptionMode() const {
+    return impl_->regexSubscriptionMode;
+}
 
 }  // namespace pulsar

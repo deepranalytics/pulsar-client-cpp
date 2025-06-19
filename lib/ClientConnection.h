@@ -23,37 +23,46 @@
 #include <pulsar/defines.h>
 
 #include <atomic>
-#include <boost/any.hpp>
+#include <cstdint>
+#ifdef USE_ASIO
+#include <asio/bind_executor.hpp>
+#include <asio/io_service.hpp>
+#include <asio/ip/tcp.hpp>
+#include <asio/ssl/stream.hpp>
+#include <asio/strand.hpp>
+#else
 #include <boost/asio/bind_executor.hpp>
-#include <boost/asio/deadline_timer.hpp>
 #include <boost/asio/io_service.hpp>
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/asio/ssl/stream.hpp>
 #include <boost/asio/strand.hpp>
+#endif
+#include <boost/any.hpp>
 #include <boost/optional.hpp>
 #include <deque>
 #include <functional>
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
+#include "AsioTimer.h"
 #include "Commands.h"
 #include "GetLastMessageIdResponse.h"
 #include "LookupDataResult.h"
 #include "SharedBuffer.h"
+#include "TimeUtils.h"
 #include "UtilAllocator.h"
-
 namespace pulsar {
 
 class PulsarFriend;
 
-using DeadlineTimerPtr = std::shared_ptr<boost::asio::deadline_timer>;
-using TimeDuration = boost::posix_time::time_duration;
-using TcpResolverPtr = std::shared_ptr<boost::asio::ip::tcp::resolver>;
+using TcpResolverPtr = std::shared_ptr<ASIO::ip::tcp::resolver>;
 
 class ExecutorService;
 using ExecutorServicePtr = std::shared_ptr<ExecutorService>;
 
+class ConnectionPool;
 class ClientConnection;
 typedef std::shared_ptr<ClientConnection> ClientConnectionPtr;
 typedef std::weak_ptr<ClientConnection> ClientConnectionWeakPtr;
@@ -69,13 +78,15 @@ typedef std::weak_ptr<ConsumerImpl> ConsumerImplWeakPtr;
 class LookupDataResult;
 class BrokerConsumerStatsImpl;
 class PeriodicTask;
-
-struct OpSendMsg;
+struct SendArguments;
 
 namespace proto {
 class BaseCommand;
+class BrokerEntryMetadata;
 class CommandActiveConsumerChange;
+class CommandAckResponse;
 class CommandMessage;
+class CommandTopicMigrated;
 class CommandCloseConsumer;
 class CommandCloseProducer;
 class CommandConnected;
@@ -103,7 +114,7 @@ struct ResponseData {
 typedef std::shared_ptr<std::vector<std::string>> NamespaceTopicsPtr;
 
 class PULSAR_PUBLIC ClientConnection : public std::enable_shared_from_this<ClientConnection> {
-    enum State
+    enum State : uint8_t
     {
         Pending,
         TcpConnected,
@@ -112,10 +123,10 @@ class PULSAR_PUBLIC ClientConnection : public std::enable_shared_from_this<Clien
     };
 
    public:
-    typedef std::shared_ptr<boost::asio::ip::tcp::socket> SocketPtr;
-    typedef std::shared_ptr<boost::asio::ssl::stream<boost::asio::ip::tcp::socket&>> TlsSocketPtr;
+    typedef std::shared_ptr<ASIO::ip::tcp::socket> SocketPtr;
+    typedef std::shared_ptr<ASIO::ssl::stream<ASIO::ip::tcp::socket&>> TlsSocketPtr;
     typedef std::shared_ptr<ClientConnection> ConnectionPtr;
-    typedef std::function<void(const boost::system::error_code&, ConnectionPtr)> ConnectionListener;
+    typedef std::function<void(const ASIO_ERROR&, ConnectionPtr)> ConnectionListener;
     typedef std::vector<ConnectionListener>::iterator ListenerIterator;
 
     /*
@@ -125,9 +136,14 @@ class PULSAR_PUBLIC ClientConnection : public std::enable_shared_from_this<Clien
      *
      */
     ClientConnection(const std::string& logicalAddress, const std::string& physicalAddress,
-                     ExecutorServicePtr executor, const ClientConfiguration& clientConfiguration,
-                     const AuthenticationPtr& authentication);
+                     const ExecutorServicePtr& executor, const ClientConfiguration& clientConfiguration,
+                     const AuthenticationPtr& authentication, const std::string& clientVersion,
+                     ConnectionPool& pool, size_t poolIndex);
     ~ClientConnection();
+
+#if __cplusplus < 201703L
+    std::weak_ptr<ClientConnection> weak_from_this() noexcept { return shared_from_this(); }
+#endif
 
     /*
      * starts tcp connect_async
@@ -135,7 +151,15 @@ class PULSAR_PUBLIC ClientConnection : public std::enable_shared_from_this<Clien
      */
     void tcpConnectAsync();
 
-    void close(Result result = ResultConnectError);
+    /**
+     * Close the connection.
+     *
+     * @param result all pending futures will complete with this result
+     * @param detach remove it from the pool if it's true
+     *
+     * `detach` should only be false when the connection pool is closed.
+     */
+    void close(Result result = ResultConnectError, bool detach = true);
 
     bool isClosed() const;
 
@@ -144,18 +168,17 @@ class PULSAR_PUBLIC ClientConnection : public std::enable_shared_from_this<Clien
     Future<Result, ClientConnectionWeakPtr> getCloseFuture();
 
     void newTopicLookup(const std::string& topicName, bool authoritative, const std::string& listenerName,
-                        const uint64_t requestId, LookupDataResultPromisePtr promise);
+                        uint64_t requestId, const LookupDataResultPromisePtr& promise);
 
-    void newPartitionedMetadataLookup(const std::string& topicName, const uint64_t requestId,
-                                      LookupDataResultPromisePtr promise);
+    void newPartitionedMetadataLookup(const std::string& topicName, uint64_t requestId,
+                                      const LookupDataResultPromisePtr& promise);
 
     void sendCommand(const SharedBuffer& cmd);
     void sendCommandInternal(const SharedBuffer& cmd);
-    void sendMessage(const OpSendMsg& opSend);
-    void sendMessageInternal(const OpSendMsg& opSend);
+    void sendMessage(const std::shared_ptr<SendArguments>& args);
 
-    void registerProducer(int producerId, ProducerImplPtr producer);
-    void registerConsumer(int consumerId, ConsumerImplPtr consumer);
+    void registerProducer(int producerId, const ProducerImplPtr& producer);
+    void registerConsumer(int consumerId, const ConsumerImplPtr& consumer);
 
     void removeProducer(int producerId);
     void removeConsumer(int consumerId);
@@ -164,7 +187,7 @@ class PULSAR_PUBLIC ClientConnection : public std::enable_shared_from_this<Clien
      * Send a request with a specific Id over the connection. The future will be
      * triggered when the response for this request is received
      */
-    Future<Result, ResponseData> sendRequestWithId(SharedBuffer cmd, int requestId);
+    Future<Result, ResponseData> sendRequestWithId(const SharedBuffer& cmd, int requestId);
 
     const std::string& brokerAddress() const;
 
@@ -180,10 +203,12 @@ class PULSAR_PUBLIC ClientConnection : public std::enable_shared_from_this<Clien
 
     Future<Result, GetLastMessageIdResponse> newGetLastMessageId(uint64_t consumerId, uint64_t requestId);
 
-    Future<Result, NamespaceTopicsPtr> newGetTopicsOfNamespace(const std::string& nsName, uint64_t requestId);
+    Future<Result, NamespaceTopicsPtr> newGetTopicsOfNamespace(const std::string& nsName,
+                                                               CommandGetTopicsOfNamespace_Mode mode,
+                                                               uint64_t requestId);
 
-    Future<Result, boost::optional<SchemaInfo>> newGetSchema(const std::string& topicName,
-                                                             uint64_t requestId);
+    Future<Result, SchemaInfo> newGetSchema(const std::string& topicName, const std::string& version,
+                                            uint64_t requestId);
 
    private:
     struct PendingRequestData {
@@ -197,23 +222,32 @@ class PULSAR_PUBLIC ClientConnection : public std::enable_shared_from_this<Clien
         DeadlineTimerPtr timer;
     };
 
+    struct LastMessageIdRequestData {
+        GetLastMessageIdResponsePromisePtr promise;
+        DeadlineTimerPtr timer;
+    };
+
+    struct GetSchemaRequest {
+        Promise<Result, SchemaInfo> promise;
+        DeadlineTimerPtr timer;
+    };
+
     /*
      * handler for connectAsync
      * creates a ConnectionPtr which has a valid ClientConnection object
      * although not usable at this point, since this is just tcp connection
      * Pulsar - Connect/Connected has yet to happen
      */
-    void handleTcpConnected(const boost::system::error_code& err,
-                            boost::asio::ip::tcp::resolver::iterator endpointIterator);
+    void handleTcpConnected(const ASIO_ERROR& err, ASIO::ip::tcp::resolver::iterator endpointIterator);
 
-    void handleHandshake(const boost::system::error_code& err);
+    void handleHandshake(const ASIO_ERROR& err);
 
-    void handleSentPulsarConnect(const boost::system::error_code& err, const SharedBuffer& buffer);
-    void handleSentAuthResponse(const boost::system::error_code& err, const SharedBuffer& buffer);
+    void handleSentPulsarConnect(const ASIO_ERROR& err, const SharedBuffer& buffer);
+    void handleSentAuthResponse(const ASIO_ERROR& err, const SharedBuffer& buffer);
 
     void readNextCommand();
 
-    void handleRead(const boost::system::error_code& err, size_t bytesTransferred, uint32_t minReadSize);
+    void handleRead(const ASIO_ERROR& err, size_t bytesTransferred, uint32_t minReadSize);
 
     void processIncomingBuffer();
     bool verifyChecksum(SharedBuffer& incomingBuffer_, uint32_t& remainingBytes,
@@ -222,21 +256,23 @@ class PULSAR_PUBLIC ClientConnection : public std::enable_shared_from_this<Clien
     void handleActiveConsumerChange(const proto::CommandActiveConsumerChange& change);
     void handleIncomingCommand(proto::BaseCommand& incomingCmd);
     void handleIncomingMessage(const proto::CommandMessage& msg, bool isChecksumValid,
+                               proto::BrokerEntryMetadata& brokerEntryMetadata,
                                proto::MessageMetadata& msgMetadata, SharedBuffer& payload);
 
     void handlePulsarConnected(const proto::CommandConnected& cmdConnected);
 
-    void handleResolve(const boost::system::error_code& err,
-                       boost::asio::ip::tcp::resolver::iterator endpointIterator);
+    void handleResolve(const ASIO_ERROR& err, const ASIO::ip::tcp::resolver::iterator& endpointIterator);
 
-    void handleSend(const boost::system::error_code& err, const SharedBuffer& cmd);
-    void handleSendPair(const boost::system::error_code& err);
+    void handleSend(const ASIO_ERROR& err, const SharedBuffer& cmd);
+    void handleSendPair(const ASIO_ERROR& err);
     void sendPendingCommands();
-    void newLookup(const SharedBuffer& cmd, const uint64_t requestId, LookupDataResultPromisePtr promise);
+    void newLookup(const SharedBuffer& cmd, uint64_t requestId, const LookupDataResultPromisePtr& promise);
 
-    void handleRequestTimeout(const boost::system::error_code& ec, PendingRequestData pendingRequestData);
+    void handleRequestTimeout(const ASIO_ERROR& ec, const PendingRequestData& pendingRequestData);
 
-    void handleLookupTimeout(const boost::system::error_code&, LookupRequestData);
+    void handleLookupTimeout(const ASIO_ERROR&, const LookupRequestData&);
+
+    void handleGetLastMessageIdTimeout(const ASIO_ERROR&, const LastMessageIdRequestData& data);
 
     void handleKeepAliveTimeout();
 
@@ -256,13 +292,9 @@ class PULSAR_PUBLIC ClientConnection : public std::enable_shared_from_this<Clien
             return;
         }
         if (tlsSocket_) {
-#if BOOST_VERSION >= 106600
-            boost::asio::async_write(*tlsSocket_, buffers, boost::asio::bind_executor(strand_, handler));
-#else
-            boost::asio::async_write(*tlsSocket_, buffers, strand_.wrap(handler));
-#endif
+            ASIO::async_write(*tlsSocket_, buffers, ASIO::bind_executor(strand_, handler));
         } else {
-            boost::asio::async_write(*socket_, buffers, handler);
+            ASIO::async_write(*socket_, buffers, handler);
         }
     }
 
@@ -272,11 +304,7 @@ class PULSAR_PUBLIC ClientConnection : public std::enable_shared_from_this<Clien
             return;
         }
         if (tlsSocket_) {
-#if BOOST_VERSION >= 106600
-            tlsSocket_->async_read_some(buffers, boost::asio::bind_executor(strand_, handler));
-#else
-            tlsSocket_->async_read_some(buffers, strand_.wrap(handler));
-#endif
+            tlsSocket_->async_read_some(buffers, ASIO::bind_executor(strand_, handler));
         } else {
             socket_->async_receive(buffers, handler);
         }
@@ -297,11 +325,7 @@ class PULSAR_PUBLIC ClientConnection : public std::enable_shared_from_this<Clien
      */
     SocketPtr socket_;
     TlsSocketPtr tlsSocket_;
-#if BOOST_VERSION >= 106600
-    boost::asio::strand<boost::asio::io_service::executor_type> strand_;
-#else
-    boost::asio::io_service::strand strand_;
-#endif
+    ASIO::strand<ASIO::io_service::executor_type> strand_;
 
     const std::string logicalAddress_;
     /*
@@ -309,13 +333,17 @@ class PULSAR_PUBLIC ClientConnection : public std::enable_shared_from_this<Clien
      */
     const std::string physicalAddress_;
 
+    std::string proxyServiceUrl_;
+
+    ClientConfiguration::ProxyProtocol proxyProtocol_;
+
     // Represent both endpoint of the tcp connection. eg: [client:1234 -> server:6650]
     std::string cnxString_;
 
     /*
      *  indicates if async connection establishment failed
      */
-    boost::system::error_code error_;
+    ASIO_ERROR error_;
 
     SharedBuffer incomingBuffer_;
 
@@ -337,13 +365,13 @@ class PULSAR_PUBLIC ClientConnection : public std::enable_shared_from_this<Clien
     typedef std::map<uint64_t, Promise<Result, BrokerConsumerStatsImpl>> PendingConsumerStatsMap;
     PendingConsumerStatsMap pendingConsumerStatsMap_;
 
-    typedef std::map<long, Promise<Result, GetLastMessageIdResponse>> PendingGetLastMessageIdRequestsMap;
+    typedef std::map<long, LastMessageIdRequestData> PendingGetLastMessageIdRequestsMap;
     PendingGetLastMessageIdRequestsMap pendingGetLastMessageIdRequests_;
 
     typedef std::map<long, Promise<Result, NamespaceTopicsPtr>> PendingGetNamespaceTopicsMap;
     PendingGetNamespaceTopicsMap pendingGetNamespaceTopicsRequests_;
 
-    typedef std::map<long, Promise<Result, boost::optional<SchemaInfo>>> PendingGetSchemaMap;
+    typedef std::unordered_map<uint64_t, GetSchemaRequest> PendingGetSchemaMap;
     PendingGetSchemaMap pendingGetSchemaRequests_;
 
     mutable std::mutex mutex_;
@@ -360,21 +388,27 @@ class PULSAR_PUBLIC ClientConnection : public std::enable_shared_from_this<Clien
 
     // Signals whether we're waiting for a response from broker
     bool havePendingPingRequest_ = false;
+    bool isSniProxy_ = false;
+    unsigned int keepAliveIntervalInSeconds_;
     DeadlineTimerPtr keepAliveTimer_;
     DeadlineTimerPtr consumerStatsRequestTimer_;
 
-    void handleConsumerStatsTimeout(const boost::system::error_code& ec,
-                                    std::vector<uint64_t> consumerStatsRequests);
+    void handleConsumerStatsTimeout(const ASIO_ERROR& ec, const std::vector<uint64_t>& consumerStatsRequests);
 
     void startConsumerStatsTimer(std::vector<uint64_t> consumerStatsRequests);
     uint32_t maxPendingLookupRequest_;
     uint32_t numOfPendingLookupRequest_ = 0;
-    friend class PulsarFriend;
 
     bool isTlsAllowInsecureConnection_ = false;
 
-    void closeSocket();
-    void checkServerError(ServerError error);
+    const std::string clientVersion_;
+    ConnectionPool& pool_;
+    const size_t poolIndex_;
+
+    friend class PulsarFriend;
+    friend class ConsumerTest;
+
+    void checkServerError(ServerError error, const std::string& message);
 
     void handleSendReceipt(const proto::CommandSendReceipt&);
     void handleSendError(const proto::CommandSendError&);
@@ -384,12 +418,19 @@ class PULSAR_PUBLIC ClientConnection : public std::enable_shared_from_this<Clien
     void handleLookupTopicRespose(const proto::CommandLookupTopicResponse&);
     void handleProducerSuccess(const proto::CommandProducerSuccess&);
     void handleError(const proto::CommandError&);
+    void handleTopicMigrated(const proto::CommandTopicMigrated&);
     void handleCloseProducer(const proto::CommandCloseProducer&);
     void handleCloseConsumer(const proto::CommandCloseConsumer&);
     void handleAuthChallenge();
     void handleGetLastMessageIdResponse(const proto::CommandGetLastMessageIdResponse&);
     void handleGetTopicOfNamespaceResponse(const proto::CommandGetTopicsOfNamespaceResponse&);
     void handleGetSchemaResponse(const proto::CommandGetSchemaResponse&);
+    void handleAckResponse(const proto::CommandAckResponse&);
+    boost::optional<std::string> getAssignedBrokerServiceUrl(const proto::CommandCloseProducer&);
+    boost::optional<std::string> getAssignedBrokerServiceUrl(const proto::CommandCloseConsumer&);
+    std::string getMigratedBrokerServiceUrl(const proto::CommandTopicMigrated&);
+    // This method must be called when `mutex_` is held
+    void unsafeRemovePendingRequest(long requestId);
 };
 }  // namespace pulsar
 

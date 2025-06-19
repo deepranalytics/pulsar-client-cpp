@@ -48,6 +48,7 @@ class KeyFile {
     KeyFile() : valid_(false) {}
 
     static KeyFile fromFile(const std::string& filename);
+    static KeyFile fromBase64(const std::string& encoded);
 };
 
 class ClientCredentialFlow : public Oauth2Flow {
@@ -78,7 +79,7 @@ class Oauth2CachedToken : public CachedToken {
    public:
     using Clock = std::chrono::high_resolution_clock;
 
-    Oauth2CachedToken(Oauth2TokenResultPtr token);
+    Oauth2CachedToken(const Oauth2TokenResultPtr& token);
     ~Oauth2CachedToken();
     bool isExpired();
     AuthenticationDataPtr getAuthData();

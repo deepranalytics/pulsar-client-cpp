@@ -18,12 +18,17 @@
  */
 #include <gtest/gtest.h>
 #include <pulsar/Client.h>
+#include <pulsar/Version.h>
 
+#include <algorithm>
 #include <chrono>
 #include <future>
+#include <sstream>
 
-#include "HttpHelper.h"
+#include "MockClientImpl.h"
+#include "PulsarAdminHelper.h"
 #include "PulsarFriend.h"
+#include "WaitUtils.h"
 #include "lib/ClientConnection.h"
 #include "lib/LogUtils.h"
 #include "lib/checksum/ChecksumProvider.h"
@@ -32,8 +37,10 @@
 DECLARE_LOG_OBJECT()
 
 using namespace pulsar;
+using testing::AtLeast;
 
 static std::string lookupUrl = "pulsar://localhost:6650";
+static std::string adminUrl = "http://localhost:8080/";
 
 TEST(ClientTest, testChecksumComputation) {
     std::string data = "test";
@@ -109,11 +116,12 @@ TEST(ClientTest, testConnectTimeout) {
 
     std::promise<Result> promiseLow;
     clientLow.createProducerAsync(
-        topic, [&promiseLow](Result result, Producer producer) { promiseLow.set_value(result); });
+        topic, [&promiseLow](Result result, const Producer &producer) { promiseLow.set_value(result); });
 
     std::promise<Result> promiseDefault;
-    clientDefault.createProducerAsync(
-        topic, [&promiseDefault](Result result, Producer producer) { promiseDefault.set_value(result); });
+    clientDefault.createProducerAsync(topic, [&promiseDefault](Result result, const Producer &producer) {
+        promiseDefault.set_value(result);
+    });
 
     auto futureLow = promiseLow.get_future();
     ASSERT_EQ(futureLow.wait_for(std::chrono::milliseconds(1500)), std::future_status::ready);
@@ -226,6 +234,9 @@ TEST(ClientTest, testReferenceCount) {
         LOG_INFO("Reference count of the reader: " << readerWeakPtr.use_count());
     }
 
+    waitUntil(std::chrono::seconds(3), [&] {
+        return producers.size() == 0 && consumers.size() == 0 && readerWeakPtr.use_count() == 0;
+    });
     EXPECT_EQ(producers.size(), 0);
     EXPECT_EQ(consumers.size(), 0);
     EXPECT_EQ(readerWeakPtr.use_count(), 0);
@@ -240,7 +251,7 @@ TEST(ClientTest, testWrongListener) {
 
     Client client(lookupUrl, ClientConfiguration().setListenerName("test"));
     Producer producer;
-    ASSERT_EQ(ResultServiceUnitNotReady, client.createProducer(topic, producer));
+    ASSERT_EQ(ResultConnectError, client.createProducer(topic, producer));
     ASSERT_EQ(ResultProducerNotInitialized, producer.close());
     ASSERT_EQ(PulsarFriend::getProducers(client).size(), 0);
     ASSERT_EQ(ResultOk, client.close());
@@ -249,7 +260,7 @@ TEST(ClientTest, testWrongListener) {
     // creation of Consumer or Reader could fail with ResultConnectError.
     client = Client(lookupUrl, ClientConfiguration().setListenerName("test"));
     Consumer consumer;
-    ASSERT_EQ(ResultServiceUnitNotReady, client.subscribe(topic, "sub", consumer));
+    ASSERT_EQ(ResultConnectError, client.subscribe(topic, "sub", consumer));
     ASSERT_EQ(ResultConsumerNotInitialized, consumer.close());
 
     ASSERT_EQ(PulsarFriend::getConsumers(client).size(), 0);
@@ -258,7 +269,7 @@ TEST(ClientTest, testWrongListener) {
     client = Client(lookupUrl, ClientConfiguration().setListenerName("test"));
 
     Consumer multiTopicsConsumer;
-    ASSERT_EQ(ResultServiceUnitNotReady,
+    ASSERT_EQ(ResultConnectError,
               client.subscribe({topic + "-partition-0", topic + "-partition-1", topic + "-partition-2"},
                                "sub", multiTopicsConsumer));
 
@@ -270,7 +281,7 @@ TEST(ClientTest, testWrongListener) {
 
     // Currently Reader can only read a non-partitioned topic in C++ client
     Reader reader;
-    ASSERT_EQ(ResultServiceUnitNotReady,
+    ASSERT_EQ(ResultConnectError,
               client.createReader(topic + "-partition-0", MessageId::earliest(), {}, reader));
     ASSERT_EQ(ResultConsumerNotInitialized, reader.close());
     ASSERT_EQ(PulsarFriend::getConsumers(client).size(), 0);
@@ -306,5 +317,192 @@ TEST(ClientTest, testCloseClient) {
         while ((std::chrono::steady_clock::now() - t0) < std::chrono::microseconds(i)) {
         }
         client.close();
+    }
+}
+
+namespace pulsar {
+
+class PulsarWrapper {
+   public:
+    static ClientConfiguration createConfig(const std::string &description) {
+        ClientConfiguration conf;
+        conf.setDescription(description);
+        return conf;
+    }
+};
+
+}  // namespace pulsar
+
+// When `subscription` is empty, get client versions of the producers.
+// Otherwise, get client versions of the consumers under the subscribe.
+static std::vector<std::string> getClientVersions(const std::string &topic,
+                                                  const std::string &subscription = "") {
+    boost::property_tree::ptree root;
+    const auto error = getTopicStats(topic, root);
+    if (!error.empty()) {
+        LOG_ERROR(error);
+        return {};
+    }
+
+    std::vector<std::string> versions;
+    if (subscription.empty()) {
+        for (auto &child : root.get_child("publishers")) {
+            versions.emplace_back(child.second.get<std::string>("clientVersion"));
+        }
+    } else {
+        auto consumers = root.get_child("subscriptions").get_child_optional(subscription);
+        if (consumers) {
+            for (auto &child : consumers.value().get_child("consumers")) {
+                versions.emplace_back(child.second.get<std::string>("clientVersion"));
+            }
+        }
+    }
+    std::sort(versions.begin(), versions.end());
+    return versions;
+}
+
+TEST(ClientTest, testClientVersion) {
+    const std::string topic = "testClientVersion" + std::to_string(time(nullptr));
+    const std::string expectedVersion = std::string("Pulsar-CPP-v") + PULSAR_VERSION_STR;
+
+    Client client(lookupUrl);
+    Client client2(lookupUrl, PulsarWrapper::createConfig("forked"));
+
+    std::string responseData;
+
+    ASSERT_TRUE(getClientVersions(topic).empty());
+    Producer producer;
+    ASSERT_EQ(ResultOk, client.createProducer(topic, producer));
+    ASSERT_EQ(getClientVersions(topic), (std::vector<std::string>{expectedVersion}));
+
+    Producer producer2;
+    ASSERT_EQ(ResultOk, client2.createProducer(topic, producer2));
+    ASSERT_EQ(getClientVersions(topic),
+              (std::vector<std::string>{expectedVersion, expectedVersion + "-forked"}));
+
+    producer.close();
+
+    ASSERT_TRUE(getClientVersions(topic, "consumer-1").empty());
+    auto consumerConf = ConsumerConfiguration{}.setConsumerType(ConsumerType::ConsumerFailover);
+    Consumer consumer;
+    ASSERT_EQ(ResultOk, client.subscribe(topic, "consumer-1", consumerConf, consumer));
+    ASSERT_EQ(getClientVersions(topic, "consumer-1"), (std::vector<std::string>{expectedVersion}));
+
+    Consumer consumer2;
+    ASSERT_EQ(ResultOk, client2.subscribe(topic, "consumer-1", consumerConf, consumer2));
+    ASSERT_EQ(getClientVersions(topic, "consumer-1"),
+              (std::vector<std::string>{expectedVersion, expectedVersion + "-forked"}));
+
+    consumer.close();
+
+    client.close();
+}
+
+TEST(ClientTest, testConnectionClose) {
+    std::vector<Client> clients;
+    clients.emplace_back(lookupUrl);
+    clients.emplace_back(lookupUrl, ClientConfiguration().setConnectionsPerBroker(5));
+
+    const auto topic = "client-test-connection-close";
+    for (auto &client : clients) {
+        auto testClose = [&client](const ClientConnectionWeakPtr &weakCnx) {
+            auto cnx = weakCnx.lock();
+            ASSERT_TRUE(cnx);
+
+            auto numConnections = PulsarFriend::getConnections(client).size();
+            LOG_INFO("Connection refcnt: " << cnx.use_count() << " before close");
+            auto executor = PulsarFriend::getExecutor(*cnx);
+            // Simulate the close() happens in the event loop
+            executor->postWork([cnx, &client, numConnections] {
+                cnx->close();
+                ASSERT_EQ(PulsarFriend::getConnections(client).size(), numConnections - 1);
+                LOG_INFO("Connection refcnt: " << cnx.use_count() << " after close");
+            });
+            cnx.reset();
+
+            // The ClientConnection could still be referred in a socket callback, wait until all these
+            // callbacks being cancelled due to the socket close.
+            ASSERT_TRUE(waitUntil(
+                std::chrono::seconds(1), [weakCnx] { return weakCnx.expired(); }, 1));
+        };
+        Producer producer;
+        ASSERT_EQ(ResultOk, client.createProducer(topic, producer));
+        testClose(PulsarFriend::getProducerImpl(producer).getCnx());
+        producer.close();
+
+        Consumer consumer;
+        ASSERT_EQ(ResultOk, client.subscribe("client-test-connection-close", "sub", consumer));
+        testClose(PulsarFriend::getConsumerImpl(consumer).getCnx());
+        consumer.close();
+
+        client.close();
+    }
+}
+
+TEST(ClientTest, testRetryUntilSucceed) {
+    auto clientImpl = std::make_shared<MockClientImpl>(lookupUrl);
+    constexpr int kFailCount = 3;
+    EXPECT_CALL(*clientImpl, getConnection).Times((kFailCount + 1) * 2);
+    std::atomic_int count{0};
+    ON_CALL(*clientImpl, getConnection)
+        .WillByDefault([&clientImpl, &count](const std::string &redirectedClusterURI,
+                                             const std::string &topic, size_t index) {
+            if (count++ < kFailCount) {
+                return GetConnectionFuture::failed(ResultRetryable);
+            }
+            return clientImpl->getConnectionReal(topic, index);
+        });
+
+    auto topic = "client-test-retry-until-succeed";
+    ASSERT_EQ(ResultOk, clientImpl->createProducer(topic).result);
+    count = 0;
+    ASSERT_EQ(ResultOk, clientImpl->subscribe(topic).result);
+    ASSERT_EQ(ResultOk, clientImpl->close());
+}
+
+TEST(ClientTest, testRetryTimeout) {
+    auto clientImpl =
+        std::make_shared<MockClientImpl>(lookupUrl, ClientConfiguration().setOperationTimeoutSeconds(2));
+    EXPECT_CALL(*clientImpl, getConnection).Times(AtLeast(2 * 2));
+    ON_CALL(*clientImpl, getConnection)
+        .WillByDefault([](const std::string &redirectedClusterURI, const std::string &topic, size_t index) {
+            return GetConnectionFuture::failed(ResultRetryable);
+        });
+
+    auto topic = "client-test-retry-timeout";
+    {
+        MockClientImpl::SyncOpResult result = clientImpl->createProducer(topic);
+        ASSERT_EQ(ResultTimeout, result.result);
+        ASSERT_TRUE(result.timeMs >= 2000 && result.timeMs < 2100) << "producer: " << result.timeMs << " ms";
+    }
+    {
+        MockClientImpl::SyncOpResult result = clientImpl->subscribe(topic);
+        ASSERT_EQ(ResultTimeout, result.result);
+        ASSERT_TRUE(result.timeMs >= 2000 && result.timeMs < 2100) << "consumer: " << result.timeMs << " ms";
+    }
+
+    ASSERT_EQ(ResultOk, clientImpl->close());
+}
+
+TEST(ClientTest, testNoRetry) {
+    auto clientImpl =
+        std::make_shared<MockClientImpl>(lookupUrl, ClientConfiguration().setOperationTimeoutSeconds(100));
+    EXPECT_CALL(*clientImpl, getConnection).Times(2);
+    ON_CALL(*clientImpl, getConnection)
+        .WillByDefault([](const std::string &redirectedClusterURI, const std::string &, size_t) {
+            return GetConnectionFuture::failed(ResultAuthenticationError);
+        });
+
+    auto topic = "client-test-no-retry";
+    {
+        MockClientImpl::SyncOpResult result = clientImpl->createProducer(topic);
+        ASSERT_EQ(ResultAuthenticationError, result.result);
+        ASSERT_TRUE(result.timeMs < 1000) << "producer: " << result.timeMs << " ms";
+    }
+    {
+        MockClientImpl::SyncOpResult result = clientImpl->subscribe(topic);
+        LOG_INFO("It takes " << result.timeMs << " ms to subscribe");
+        ASSERT_EQ(ResultAuthenticationError, result.result);
+        ASSERT_TRUE(result.timeMs < 1000) << "consumer: " << result.timeMs << " ms";
     }
 }

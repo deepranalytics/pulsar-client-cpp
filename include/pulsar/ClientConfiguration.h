@@ -23,6 +23,8 @@
 #include <pulsar/Logger.h>
 #include <pulsar/defines.h>
 
+#include <cstdint>
+
 namespace pulsar {
 class PulsarWrapper;
 struct ClientConfigurationImpl;
@@ -32,6 +34,10 @@ class PULSAR_PUBLIC ClientConfiguration {
     ~ClientConfiguration();
     ClientConfiguration(const ClientConfiguration&);
     ClientConfiguration& operator=(const ClientConfiguration&);
+    enum ProxyProtocol : uint8_t
+    {
+        SNI = 0
+    };
 
     /**
      * Configure a limit on the amount of memory that will be allocated by this client instance.
@@ -45,6 +51,21 @@ class PULSAR_PUBLIC ClientConfiguration {
      * @return the client memory limit in bytes
      */
     uint64_t getMemoryLimit() const;
+
+    /**
+     * Sets the max number of connection that the client library will open to a single broker.
+     * By default, the connection pool will use a single connection for all the producers and consumers.
+     * Increasing this parameter may improve throughput when using many producers over a high latency
+     * connection.
+     *
+     * @param connectionsPerBroker max number of connections per broker (needs to be greater than 0)
+     */
+    ClientConfiguration& setConnectionsPerBroker(int connectionsPerBroker);
+
+    /**
+     * @return the max number of connection that the client library will open to a single broker
+     */
+    int getConnectionsPerBroker() const;
 
     /**
      * Set the authentication method to be used with the broker
@@ -154,19 +175,6 @@ class PULSAR_PUBLIC ClientConfiguration {
      * @return Get max backoff interval in milliseconds.
      */
     int getMaxBackoffIntervalMs() const;
-
-    /**
-     * Initialize the log configuration
-     *
-     * @param logConfFilePath  path of the configuration file
-     * @deprecated
-     */
-    ClientConfiguration& setLogConfFilePath(const std::string& logConfFilePath);
-
-    /**
-     * Get the path of log configuration file (log4cpp)
-     */
-    const std::string& getLogConfFilePath() const;
 
     /**
      * Configure a custom logger backend to route of Pulsar client library
@@ -319,9 +327,49 @@ class PULSAR_PUBLIC ClientConfiguration {
     ClientConfiguration& setConnectionTimeout(int timeoutMs);
 
     /**
+     * Set proxy-service url when client would like to connect to broker via proxy. Client must configure both
+     * proxyServiceUrl and appropriate proxyProtocol.
+     *
+     * Example: pulsar+ssl://ats-proxy.example.com:4443
+     *
+     * @param proxyServiceUrl proxy url to connect with broker
+     * @return
+     */
+    ClientConfiguration& setProxyServiceUrl(const std::string& proxyServiceUrl);
+
+    const std::string& getProxyServiceUrl() const;
+
+    /**
+     * Set appropriate proxy-protocol along with proxy-service url. Currently Pulsar supports SNI proxy
+     * routing.
+     *
+     * SNI routing:
+     * https://docs.trafficserver.apache.org/en/latest/admin-guide/layer-4-routing.en.html#sni-routing.
+     *
+     * @param proxyProtocol possible options (SNI)
+     * @return
+     */
+    ClientConfiguration& setProxyProtocol(ProxyProtocol proxyProtocol);
+
+    ProxyProtocol getProxyProtocol() const;
+
+    /**
      * The getter associated with setConnectionTimeout().
      */
     int getConnectionTimeout() const;
+
+    /**
+     * Set keep alive interval for each client-broker-connection. <i>(default: 30 seconds)</i>.
+     *
+     * @param keepAliveIntervalInSeconds
+     * @return
+     */
+    ClientConfiguration& setKeepAliveIntervalInSeconds(unsigned int keepAliveIntervalInSeconds);
+
+    /**
+     * The getter associated with setKeepAliveIntervalInSeconds().
+     */
+    unsigned int getKeepAliveIntervalInSeconds() const;
 
     friend class ClientImpl;
     friend class PulsarWrapper;
@@ -329,6 +377,42 @@ class PULSAR_PUBLIC ClientConfiguration {
    private:
     const AuthenticationPtr& getAuthPtr() const;
     std::shared_ptr<ClientConfigurationImpl> impl_;
+
+    // By default, when the client connects to the broker, a version string like "Pulsar-CPP-v<x.y.z>" will be
+    // carried and saved by the broker. The client version string could be queried from the topic stats.
+    //
+    // This method provides a way to add more description to a specific `Client` instance. If it's configured,
+    // the description will be appended to the original client version string, with '-' as the separator.
+    //
+    // For example, if the client version is 3.2.0, and the description is "forked", the final client version
+    // string will be "Pulsar-CPP-v3.2.0-forked".
+    //
+    // NOTE: This method should only be called by the PulsarWrapper and the length should not exceed 64.
+    //
+    // For example, you can add a PulsarWrapper class like:
+    //
+    // ```c++
+    // namespace pulsar {
+    // class PulsarWrapper {
+    //     static ClientConfiguration clientConfig() {
+    //         ClientConfiguration conf;
+    //         conf.setDescription("forked");
+    //         return conf;
+    //     }
+    // };
+    // }
+    // ```
+    //
+    // Then, call the method before passing the `conf` to the constructor of `Client`:
+    //
+    // ```c++
+    // auto conf = PulsarWrapper::clientConfig();
+    // // Set other attributes of `conf` here...
+    // Client client{"pulsar://localhost:6650", conf);
+    // ```
+    ClientConfiguration& setDescription(const std::string& description);
+
+    const std::string& getDescription() const noexcept;
 };
 }  // namespace pulsar
 

@@ -24,6 +24,10 @@ cd /pulsar-client-cpp
 ROOT_DIR=$(pwd)
 cd $ROOT_DIR/pkg/rpm
 
+if [[ $PLATFORM == "aarch64" ]]; then
+    export VCPKG_FORCE_SYSTEM_BINARIES=arm
+fi
+
 POM_VERSION=`cat $ROOT_DIR/version.txt | xargs`
 
 # Sanitize VERSION by removing `-incubating` since it's not legal in RPM

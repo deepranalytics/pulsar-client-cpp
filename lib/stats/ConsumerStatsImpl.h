@@ -20,20 +20,16 @@
 #ifndef PULSAR_CONSUMER_STATS_IMPL_H_
 #define PULSAR_CONSUMER_STATS_IMPL_H_
 
-#include <boost/asio/deadline_timer.hpp>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <utility>
 
 #include "ConsumerStatsBase.h"
-#include "lib/ExecutorService.h"
+#include "lib/AsioTimer.h"
 namespace pulsar {
 
-using DeadlineTimerPtr = std::shared_ptr<boost::asio::deadline_timer>;
-class ExecutorService;
-using ExecutorServicePtr = std::shared_ptr<ExecutorService>;
-
-class ConsumerStatsImpl : public ConsumerStatsBase {
+class ConsumerStatsImpl : public std::enable_shared_from_this<ConsumerStatsImpl>, public ConsumerStatsBase {
    private:
     std::string consumerStr_;
 
@@ -45,21 +41,26 @@ class ConsumerStatsImpl : public ConsumerStatsBase {
     std::map<Result, unsigned long> totalReceivedMsgMap_;
     std::map<std::pair<Result, CommandAck_AckType>, unsigned long> totalAckedMsgMap_;
 
-    ExecutorServicePtr executor_;
-    DeadlineTimerPtr timer_;
+    const DeadlineTimerPtr timer_;
     std::mutex mutex_;
     unsigned int statsIntervalInSeconds_;
 
+    void scheduleTimer();
     friend std::ostream& operator<<(std::ostream&, const ConsumerStatsImpl&);
     friend std::ostream& operator<<(std::ostream&, const std::map<Result, unsigned long>&);
     friend class PulsarFriend;
 
    public:
-    ConsumerStatsImpl(std::string, ExecutorServicePtr, unsigned int);
+    ConsumerStatsImpl(const std::string&, DeadlineTimerPtr, unsigned int);
     ConsumerStatsImpl(const ConsumerStatsImpl& stats);
-    void flushAndReset(const boost::system::error_code&);
-    virtual void receivedMessage(Message&, Result);
-    virtual void messageAcknowledged(Result, CommandAck_AckType, uint32_t ackNums = 1);
+    void flushAndReset(const ASIO_ERROR&);
+    void start() override;
+    void stop() override {
+        ASIO_ERROR error;
+        timer_->cancel(error);
+    }
+    void receivedMessage(Message&, Result) override;
+    void messageAcknowledged(Result, CommandAck_AckType, uint32_t ackNums) override;
     virtual ~ConsumerStatsImpl();
 
     const inline std::map<std::pair<Result, CommandAck_AckType>, unsigned long>& getAckedMsgMap() const {

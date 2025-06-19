@@ -19,7 +19,12 @@
 
 #include "AckGroupingTracker.h"
 
+#include <atomic>
+#include <limits>
+#include <set>
+
 #include "BitSet.h"
+#include "ChunkMessageIdImpl.h"
 #include "ClientConnection.h"
 #include "Commands.h"
 #include "LogUtils.h"
@@ -29,24 +34,44 @@ namespace pulsar {
 
 DECLARE_LOG_OBJECT();
 
-inline void sendAck(ClientConnectionPtr cnx, uint64_t consumerId, const MessageId& msgId,
-                    CommandAck_AckType ackType) {
-    const auto& bitSet = Commands::getMessageIdImpl(msgId)->getBitSet();
-    auto cmd = Commands::newAck(consumerId, msgId.ledgerId(), msgId.entryId(), bitSet, ackType, -1);
-    cnx->sendCommand(cmd);
-    LOG_DEBUG("ACK request is sent for message - [" << msgId.ledgerId() << ", " << msgId.entryId() << "]");
-}
-
-bool AckGroupingTracker::doImmediateAck(ClientConnectionWeakPtr connWeakPtr, uint64_t consumerId,
-                                        const MessageId& msgId, CommandAck_AckType ackType) {
-    auto cnx = connWeakPtr.lock();
-    if (cnx == nullptr) {
-        LOG_DEBUG("Connection is not ready, ACK failed for message - [" << msgId.ledgerId() << ", "
-                                                                        << msgId.entryId() << "]");
-        return false;
+void AckGroupingTracker::doImmediateAck(const MessageId& msgId, const ResultCallback& callback,
+                                        CommandAck_AckType ackType) const {
+    const auto cnx = connectionSupplier_();
+    if (!cnx) {
+        LOG_DEBUG("Connection is not ready, ACK failed for " << msgId);
+        if (callback) {
+            callback(ResultAlreadyClosed);
+        }
+        return;
     }
-    sendAck(cnx, consumerId, msgId, ackType);
-    return true;
+    if (ackType == CommandAck_AckType_Individual) {
+        // If it's individual ack, we need to acknowledge all message IDs in a chunked message Id
+        // If it's cumulative ack, we only need to ack the last message ID of a chunked message.
+        // ChunkedMessageId return last chunk message ID by default, so we don't need to handle it.
+        if (auto chunkMessageId =
+                std::dynamic_pointer_cast<ChunkMessageIdImpl>(Commands::getMessageIdImpl(msgId))) {
+            auto msgIdList = chunkMessageId->getChunkedMessageIds();
+            doImmediateAck(std::set<MessageId>(msgIdList.begin(), msgIdList.end()), callback);
+            return;
+        }
+    }
+    const auto& ackSet = Commands::getMessageIdImpl(msgId)->getBitSet();
+    if (waitResponse_) {
+        const auto requestId = requestIdSupplier_();
+        cnx->sendRequestWithId(
+               Commands::newAck(consumerId_, msgId.ledgerId(), msgId.entryId(), ackSet, ackType, requestId),
+               requestId)
+            .addListener([callback](Result result, const ResponseData&) {
+                if (callback) {
+                    callback(result);
+                }
+            });
+    } else {
+        cnx->sendCommand(Commands::newAck(consumerId_, msgId.ledgerId(), msgId.entryId(), ackSet, ackType));
+        if (callback) {
+            callback(ResultOk);
+        }
+    }
 }
 
 static std::ostream& operator<<(std::ostream& os, const std::set<MessageId>& msgIds) {
@@ -62,25 +87,55 @@ static std::ostream& operator<<(std::ostream& os, const std::set<MessageId>& msg
     return os;
 }
 
-bool AckGroupingTracker::doImmediateAck(ClientConnectionWeakPtr connWeakPtr, uint64_t consumerId,
-                                        const std::set<MessageId>& msgIds) {
-    auto cnx = connWeakPtr.lock();
-    if (cnx == nullptr) {
-        LOG_DEBUG("Connection is not ready, ACK failed.");
-        return false;
+void AckGroupingTracker::doImmediateAck(const std::set<MessageId>& msgIds,
+                                        const ResultCallback& callback) const {
+    const auto cnx = connectionSupplier_();
+    if (!cnx) {
+        LOG_DEBUG("Connection is not ready, ACK failed for " << msgIds);
+        if (callback) {
+            callback(ResultAlreadyClosed);
+        }
+        return;
+    }
+
+    std::set<MessageId> ackMsgIds;
+
+    for (const auto& msgId : msgIds) {
+        if (auto chunkMessageId =
+                std::dynamic_pointer_cast<ChunkMessageIdImpl>(Commands::getMessageIdImpl(msgId))) {
+            auto msgIdList = chunkMessageId->getChunkedMessageIds();
+            ackMsgIds.insert(msgIdList.begin(), msgIdList.end());
+        } else {
+            ackMsgIds.insert(msgId);
+        }
     }
 
     if (Commands::peerSupportsMultiMessageAcknowledgement(cnx->getServerProtocolVersion())) {
-        auto cmd = Commands::newMultiMessageAck(consumerId, msgIds);
-        cnx->sendCommand(cmd);
-        LOG_DEBUG("ACK request is sent for " << msgIds.size() << " messages: " << msgIds);
+        if (waitResponse_) {
+            const auto requestId = requestIdSupplier_();
+            cnx->sendRequestWithId(Commands::newMultiMessageAck(consumerId_, ackMsgIds, requestId), requestId)
+                .addListener([callback](Result result, const ResponseData&) {
+                    if (callback) {
+                        callback(result);
+                    }
+                });
+        } else {
+            cnx->sendCommand(Commands::newMultiMessageAck(consumerId_, ackMsgIds));
+            if (callback) {
+                callback(ResultOk);
+            }
+        }
     } else {
-        // Broker does not support multi-message ACK, use multiple individual ACKs instead.
-        for (const auto& msgId : msgIds) {
-            sendAck(cnx, consumerId, msgId, CommandAck_AckType_Individual);
+        auto count = std::make_shared<std::atomic<size_t>>(ackMsgIds.size());
+        auto wrappedCallback = [callback, count](Result result) {
+            if (--*count == 0 && callback) {
+                callback(result);
+            }
+        };
+        for (auto&& msgId : ackMsgIds) {
+            doImmediateAck(msgId, wrappedCallback, CommandAck_AckType_Individual);
         }
     }
-    return true;
 }
 
 }  // namespace pulsar

@@ -22,6 +22,7 @@
 #include <string>
 #include <vector>
 
+#include "AsioTimer.h"
 #include "LookupDataResult.h"
 #include "MultiTopicsConsumerImpl.h"
 #include "NamespaceName.h"
@@ -47,16 +48,19 @@ class PatternMultiTopicsConsumerImpl : public MultiTopicsConsumerImpl {
     // which only contains after namespace part.
     // when subscribe, client will first get all topics that match given pattern.
     // `topics` contains the topics that match `patternString`.
-    PatternMultiTopicsConsumerImpl(ClientImplPtr client, const std::string patternString,
+    PatternMultiTopicsConsumerImpl(const ClientImplPtr& client, const std::string& patternString,
+                                   CommandGetTopicsOfNamespace_Mode getTopicsMode,
                                    const std::vector<std::string>& topics,
                                    const std::string& subscriptionName, const ConsumerConfiguration& conf,
-                                   const LookupServicePtr lookupServicePtr_);
+                                   const LookupServicePtr& lookupServicePtr_,
+                                   const ConsumerInterceptorsPtr& interceptors);
+    ~PatternMultiTopicsConsumerImpl() override;
 
     const PULSAR_REGEX_NAMESPACE::regex getPattern();
 
-    void autoDiscoveryTimerTask(const boost::system::error_code& err);
+    void autoDiscoveryTimerTask(const ASIO_ERROR& err);
 
-    // filter input `topics` with given `pattern`, return matched topics
+    // filter input `topics` with given `pattern`, return matched topics. Do not match topic domain.
     static NamespaceTopicsPtr topicsPatternFilter(const std::vector<std::string>& topics,
                                                   const PULSAR_REGEX_NAMESPACE::regex& pattern);
 
@@ -64,25 +68,30 @@ class PatternMultiTopicsConsumerImpl : public MultiTopicsConsumerImpl {
     static NamespaceTopicsPtr topicsListsMinus(std::vector<std::string>& list1,
                                                std::vector<std::string>& list2);
 
-    virtual void closeAsync(ResultCallback callback);
-    virtual void start();
-    virtual void shutdown();
+    void closeAsync(const ResultCallback& callback) override;
+    void start() override;
 
    private:
     const std::string patternString_;
     const PULSAR_REGEX_NAMESPACE::regex pattern_;
-    typedef std::shared_ptr<boost::asio::deadline_timer> TimerPtr;
+    const CommandGetTopicsOfNamespace_Mode getTopicsMode_;
+    typedef std::shared_ptr<ASIO::steady_timer> TimerPtr;
     TimerPtr autoDiscoveryTimer_;
     bool autoDiscoveryRunning_;
     NamespaceNamePtr namespaceName_;
 
     void cancelTimers() noexcept;
     void resetAutoDiscoveryTimer();
-    void timerGetTopicsOfNamespace(const Result result, const NamespaceTopicsPtr topics);
-    void onTopicsAdded(NamespaceTopicsPtr addedTopics, ResultCallback callback);
-    void onTopicsRemoved(NamespaceTopicsPtr removedTopics, ResultCallback callback);
-    void handleOneTopicAdded(const Result result, const std::string& topic,
-                             std::shared_ptr<std::atomic<int>> topicsNeedCreate, ResultCallback callback);
+    void timerGetTopicsOfNamespace(Result result, const NamespaceTopicsPtr& topics);
+    void onTopicsAdded(const NamespaceTopicsPtr& addedTopics, const ResultCallback& callback);
+    void onTopicsRemoved(const NamespaceTopicsPtr& removedTopics, const ResultCallback& callback);
+    void handleOneTopicAdded(Result result, const std::string& topic,
+                             const std::shared_ptr<std::atomic<int>>& topicsNeedCreate,
+                             const ResultCallback& callback);
+
+    std::weak_ptr<PatternMultiTopicsConsumerImpl> weak_from_this() noexcept {
+        return std::static_pointer_cast<PatternMultiTopicsConsumerImpl>(shared_from_this());
+    }
 };
 
 }  // namespace pulsar

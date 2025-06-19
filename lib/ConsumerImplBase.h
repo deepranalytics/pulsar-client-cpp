@@ -36,15 +36,18 @@ class OpBatchReceive {
    public:
     OpBatchReceive();
     explicit OpBatchReceive(const BatchReceiveCallback& batchReceiveCallback);
-    const BatchReceiveCallback batchReceiveCallback_;
+    BatchReceiveCallback batchReceiveCallback_;
     const int64_t createAt_;
 };
 
-class ConsumerImplBase : public HandlerBase, public std::enable_shared_from_this<ConsumerImplBase> {
+class ConsumerImplBase : public HandlerBase {
    public:
     virtual ~ConsumerImplBase(){};
-    ConsumerImplBase(ClientImplPtr client, const std::string& topic, Backoff backoff,
-                     const ConsumerConfiguration& conf, ExecutorServicePtr listenerExecutor);
+    ConsumerImplBase(const ClientImplPtr& client, const std::string& topic, Backoff backoff,
+                     const ConsumerConfiguration& conf, const ExecutorServicePtr& listenerExecutor);
+    std::shared_ptr<ConsumerImplBase> shared_from_this() noexcept {
+        return std::dynamic_pointer_cast<ConsumerImplBase>(HandlerBase::shared_from_this());
+    }
 
     // interface by consumer
     virtual Future<Result, ConsumerImplBaseWeakPtr> getConsumerCreatedFuture() = 0;
@@ -52,13 +55,13 @@ class ConsumerImplBase : public HandlerBase, public std::enable_shared_from_this
     virtual const std::string& getSubscriptionName() const = 0;
     virtual Result receive(Message& msg) = 0;
     virtual Result receive(Message& msg, int timeout) = 0;
-    virtual void receiveAsync(ReceiveCallback callback) = 0;
-    void batchReceiveAsync(BatchReceiveCallback callback);
-    virtual void unsubscribeAsync(ResultCallback callback) = 0;
-    virtual void acknowledgeAsync(const MessageId& msgId, ResultCallback callback) = 0;
-    virtual void acknowledgeAsync(const MessageIdList& messageIdList, ResultCallback callback) = 0;
-    virtual void acknowledgeCumulativeAsync(const MessageId& msgId, ResultCallback callback) = 0;
-    virtual void closeAsync(ResultCallback callback) = 0;
+    virtual void receiveAsync(const ReceiveCallback& callback) = 0;
+    void batchReceiveAsync(const BatchReceiveCallback& callback);
+    virtual void unsubscribeAsync(const ResultCallback& callback) = 0;
+    virtual void acknowledgeAsync(const MessageId& msgId, const ResultCallback& callback) = 0;
+    virtual void acknowledgeAsync(const MessageIdList& messageIdList, const ResultCallback& callback) = 0;
+    virtual void acknowledgeCumulativeAsync(const MessageId& msgId, const ResultCallback& callback) = 0;
+    virtual void closeAsync(const ResultCallback& callback) = 0;
     virtual void start() = 0;
     virtual void shutdown() = 0;
     virtual bool isClosed() = 0;
@@ -68,22 +71,28 @@ class ConsumerImplBase : public HandlerBase, public std::enable_shared_from_this
     virtual void redeliverUnacknowledgedMessages() = 0;
     virtual void redeliverUnacknowledgedMessages(const std::set<MessageId>& messageIds) = 0;
     virtual int getNumOfPrefetchedMessages() const = 0;
-    virtual void getBrokerConsumerStatsAsync(BrokerConsumerStatsCallback callback) = 0;
-    virtual void getLastMessageIdAsync(BrokerGetLastMessageIdCallback callback) = 0;
-    virtual void seekAsync(const MessageId& msgId, ResultCallback callback) = 0;
-    virtual void seekAsync(uint64_t timestamp, ResultCallback callback) = 0;
+    virtual void getBrokerConsumerStatsAsync(const BrokerConsumerStatsCallback& callback) = 0;
+    virtual void getLastMessageIdAsync(const BrokerGetLastMessageIdCallback& callback) = 0;
+    virtual void seekAsync(const MessageId& msgId, const ResultCallback& callback) = 0;
+    virtual void seekAsync(uint64_t timestamp, const ResultCallback& callback) = 0;
     virtual void negativeAcknowledge(const MessageId& msgId) = 0;
     virtual bool isConnected() const = 0;
     virtual uint64_t getNumberOfConnectedConsumer() = 0;
     // overrided methods from HandlerBase
     virtual const std::string& getName() const override = 0;
-    virtual void hasMessageAvailableAsync(HasMessageAvailableCallback callback) = 0;
+    virtual void hasMessageAvailableAsync(const HasMessageAvailableCallback& callback) = 0;
+
+    const std::string& getConsumerName() const noexcept { return consumerName_; }
 
    protected:
     // overrided methods from HandlerBase
-    void connectionOpened(const ClientConnectionPtr& cnx) override {}
+    Future<Result, bool> connectionOpened(const ClientConnectionPtr& cnx) override {
+        // Do not use bool, only Result.
+        Promise<Result, bool> promise;
+        promise.setSuccess();
+        return promise.getFuture();
+    }
     void connectionFailed(Result result) override {}
-    HandlerBaseWeakPtr get_weak_from_this() override { return shared_from_this(); }
 
     // consumer impl generic method.
     ExecutorServicePtr listenerExecutor_;
@@ -99,8 +108,19 @@ class ConsumerImplBase : public HandlerBase, public std::enable_shared_from_this
     virtual bool hasEnoughMessagesForBatchReceive() const = 0;
 
    private:
+    const std::string consumerName_;
+
     virtual void setNegativeAcknowledgeEnabledForTesting(bool enabled) = 0;
 
+    // Note: it should be protected by batchPendingReceiveMutex_ and called when `batchPendingReceives_` is
+    // not empty
+    BatchReceiveCallback popBatchReceiveCallback() {
+        auto callback = std::move(batchPendingReceives_.front().batchReceiveCallback_);
+        batchPendingReceives_.pop();
+        return callback;
+    }
+
+    friend class MultiTopicsConsumerImpl;
     friend class PulsarFriend;
 };
 }  // namespace pulsar

@@ -19,14 +19,13 @@
 #include <gtest/gtest.h>
 #include <pulsar/Client.h>
 
-#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <functional>
-#include <memory>
 #include <mutex>
 
 #include "ConsumerTest.h"
+#include "HttpHelper.h"
 #include "lib/Latch.h"
 #include "lib/LogUtils.h"
 
@@ -37,9 +36,10 @@ using namespace pulsar;
 static int totalMessages = 10;
 static int globalCount = 0;
 static std::string lookupUrl = "pulsar://localhost:6650";
+static std::string adminUrl = "http://localhost:8080";
 static std::string contentBase = "msg-";
 
-static void messageListenerFunction(Consumer consumer, const Message& msg, Latch& latch) {
+static void messageListenerFunction(const Consumer& consumer, const Message& msg, Latch& latch) {
     ASSERT_EQ(0, ConsumerTest::getNumOfMessagesInQueue(consumer));
     std::ostringstream ss;
     ss << contentBase << globalCount;
@@ -126,12 +126,12 @@ TEST(ZeroQueueSizeTest, testMessageListener) {
 }
 
 static ConsumerConfiguration zeroQueueSharedConsumerConf(
-    const std::string& name, std::function<void(Consumer, const Message&)> callback) {
+    const std::string& name, const std::function<void(Consumer, const Message&)>& callback) {
     ConsumerConfiguration conf;
     conf.setConsumerType(ConsumerShared);
     conf.setReceiverQueueSize(0);
     conf.setSubscriptionInitialPosition(InitialPositionEarliest);
-    conf.setMessageListener([name, callback](Consumer consumer, const Message& msg) {
+    conf.setMessageListener([name, callback](const Consumer& consumer, const Message& msg) {
         LOG_INFO(name << " received " << msg.getDataAsString() << " from " << msg.getMessageId());
         callback(consumer, msg);
     });
@@ -287,3 +287,101 @@ TEST(ZeroQueueSizeTest, testPauseResumeNoReconnection) {
 
     client.close();
 }
+
+class ZeroQueueSizeTest : public ::testing::TestWithParam<bool> {};
+
+TEST_P(ZeroQueueSizeTest, testReceptionAfterUnloading) {
+    Client client(lookupUrl);
+    auto isAsync = GetParam();
+    std::string topicName = "zero-queue-size-reception-after-unloading";
+    if (isAsync) {
+        topicName += "-async";
+    }
+    std::string subName = "my-sub";
+
+    Producer producer;
+    Result result = client.createProducer(topicName, producer);
+    ASSERT_EQ(ResultOk, result);
+
+    Consumer consumer;
+    ConsumerConfiguration consConfig;
+    consConfig.setReceiverQueueSize(0);
+    result = client.subscribe(topicName, subName, consConfig, consumer);
+    ASSERT_EQ(ResultOk, result);
+
+    for (int i = 0; i < totalMessages / 2; i++) {
+        std::ostringstream ss;
+        ss << contentBase << i;
+        Message msg = MessageBuilder().setContent(ss.str()).build();
+        result = producer.send(msg);
+        ASSERT_EQ(ResultOk, result);
+    }
+
+    for (int i = 0; i < totalMessages / 2; i++) {
+        ASSERT_EQ(0, ConsumerTest::getNumOfMessagesInQueue(consumer));
+        std::ostringstream ss;
+        ss << contentBase << i;
+        if (isAsync) {
+            Latch latch(1);
+            consumer.receiveAsync([&consumer, &ss, &latch](Result res, const Message& receivedMsg) {
+                ASSERT_EQ(ResultOk, consumer.acknowledge(receivedMsg));
+                ASSERT_EQ(ss.str(), receivedMsg.getDataAsString());
+                ASSERT_EQ(0, ConsumerTest::getNumOfMessagesInQueue(consumer));
+                latch.countdown();
+            });
+            ASSERT_TRUE(latch.wait(std::chrono::seconds(10)));
+        } else {
+            Message receivedMsg;
+            consumer.receive(receivedMsg);
+            ASSERT_EQ(ResultOk, consumer.acknowledge(receivedMsg));
+            ASSERT_EQ(ss.str(), receivedMsg.getDataAsString());
+            ASSERT_EQ(0, ConsumerTest::getNumOfMessagesInQueue(consumer));
+        }
+    }
+
+    // Wait for messages to be delivered while performing `receive` or `receiveAsync` in a separate thread.
+    // At this time, the value of availablePermits should be 1.
+    std::thread consumeThread([&consumer, &isAsync] {
+        for (int i = totalMessages / 2; i < totalMessages; i++) {
+            ASSERT_EQ(0, ConsumerTest::getNumOfMessagesInQueue(consumer));
+            std::ostringstream ss;
+            ss << contentBase << i;
+            if (isAsync) {
+                Latch latch(1);
+                consumer.receiveAsync([&consumer, &ss, &latch](Result res, const Message& receivedMsg) {
+                    ASSERT_EQ(ResultOk, consumer.acknowledge(receivedMsg));
+                    ASSERT_EQ(ss.str(), receivedMsg.getDataAsString());
+                    ASSERT_EQ(0, ConsumerTest::getNumOfMessagesInQueue(consumer));
+                    latch.countdown();
+                });
+                ASSERT_TRUE(latch.wait(std::chrono::seconds(10)));
+            } else {
+                Message receivedMsg;
+                consumer.receive(receivedMsg);
+                ASSERT_EQ(ResultOk, consumer.acknowledge(receivedMsg));
+                ASSERT_EQ(ss.str(), receivedMsg.getDataAsString());
+                ASSERT_EQ(0, ConsumerTest::getNumOfMessagesInQueue(consumer));
+            }
+        }
+    });
+    std::this_thread::sleep_for(std::chrono::seconds(1));
+
+    int res = makePutRequest(adminUrl + "/admin/v2/persistent/public/default/" + topicName + "/unload", "");
+    ASSERT_TRUE(res / 100 == 2) << "res: " << res;
+
+    for (int i = totalMessages / 2; i < totalMessages; i++) {
+        std::ostringstream ss;
+        ss << contentBase << i;
+        Message msg = MessageBuilder().setContent(ss.str()).build();
+        result = producer.send(msg);
+        ASSERT_EQ(ResultOk, result);
+    }
+
+    consumeThread.join();
+    consumer.unsubscribe();
+    consumer.close();
+    producer.close();
+    client.close();
+}
+
+INSTANTIATE_TEST_CASE_P(Pulsar, ZeroQueueSizeTest, ::testing::Values(false, true));
