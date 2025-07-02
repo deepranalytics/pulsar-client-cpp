@@ -6,104 +6,71 @@ from enum import IntEnum
 import argparse
 import sys
 
-conan_install_dir = "conan"
-
 class BuildType(IntEnum):
     DEBUG = 1
     RELEASE = 2
 
-def prepare_install_dir(main_dir):
-    main_path = Path(main_dir)
-    install_dir = Path(main_path).joinpath(conan_install_dir)
-    if not os.path.exists(install_dir):
-        os.mkdir(install_dir)
-    return install_dir
-
 def main(build_type):
     system = platform.system()
-    print("Running python script to build package on %s platform." % (system))
-    commands = []
-
+    print(f"Running Conan 2 install script for {system} platform.")
+    
+    # Create build directory if it doesn't exist
+    build_dir = "build"
+    if not os.path.exists(build_dir):
+        os.mkdir(build_dir)
+    
+    # Change to build directory
+    os.chdir(build_dir)
+    
+    # Base command for both platforms
+    base_command = [
+        "conan", "install", "..",
+        "--build=missing"
+    ]
+    
+    # Add platform and build type specific options
     if system == "Windows":
         if build_type == BuildType.DEBUG:
-            commands.append(
-                [
-                    "conan"
-                    , "install"
-                    , ".."
-                    , "-u"
-                    , "--profile=../winprofile.txt"
-                    , "--build=missing"
-                    , "-s", "build_type=Debug"
-                    , "-s", "compiler.runtime=MDd"
-                    , "--no-imports"
-                ]
-            )
+            command = base_command + [
+                "-s", "build_type=Debug",
+                "-s", "compiler.runtime=dynamic"
+            ]
         else:
-            commands.append(
-                [
-                    "conan"
-                    , "install"
-                    , ".."
-                    , "-u"
-                    , "--profile=../winprofile.txt"
-                    , "--build=missing"
-                    , "-s", "build_type=Release"
-                    , "-s", "compiler.runtime=MD"
-                    , "--no-imports"
-                ]
-            )
+            command = base_command + [
+                "-s", "build_type=Release",
+                "-s", "compiler.runtime=dynamic"
+            ]
     elif system == "Linux":
         if build_type == BuildType.DEBUG:
-            commands.append(
-                [
-                    "conan"
-                    , "install"
-                    , ".."
-                    , "-u"
-                    , "--profile=../linuxprofile.txt"
-                    , "--build=missing"
-                    , "-s", "build_type=Debug"
-                    , "--no-imports"
-                ]
-            )
+            command = base_command + [
+                "-s", "build_type=Debug"
+            ]
         else:
-            commands.append(
-                [
-                    "conan"
-                    , "install"
-                    , ".."
-                    , "-u"
-                    , "--profile=../linuxprofile.txt"
-                    , "--build=missing"
-                    , "-s", "build_type=Release"
-                    , "--no-imports"
-                ]
-            )
+            command = base_command + [
+                "-s", "build_type=Release"
+            ]
     else:
-        print(f"Unknown system platform %s." % (system))
+        print(f"Unknown system platform {system}.")
         return 1
-
-    main_dir = os.getcwd()
-    install_dir = prepare_install_dir(main_dir)
-    os.chdir(install_dir)
-
-    for command in commands:
-        print("Running command: %s" % (" ".join(command)))
-        subprocess.run(command)
-
-    os.chdir(main_dir)
-    return 0
+    
+    # Run the command
+    print(f"Running command: {' '.join(command)}")
+    result = subprocess.run(command)
+    
+    # Return to original directory
+    os.chdir("..")
+    
+    return result.returncode
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='--mode')
+    parser = argparse.ArgumentParser(description='Conan 2 install script')
     parser.add_argument('-m', '--mode', type=str, help='compile mode.\nAllowed modes are \n -> release \n -> debug')
     
     args = parser.parse_args()
 
     if len(sys.argv) < 2:
         parser.print_help()
-        sys.exit()
+        sys.exit(1)
 
     build_mode = args.mode
     build_type = -1
@@ -113,9 +80,9 @@ if __name__ == "__main__":
         build_type = BuildType.RELEASE
 
     if build_type != BuildType.DEBUG and build_type != BuildType.RELEASE:
-        print("{Invalid input '%s'} Enter debug or release" % (build_mode))
+        print(f"Invalid input '{build_mode}'. Enter debug or release")
         exit(1)
 
-    print("TYPE SELECTED: %s" % (build_mode))
+    print(f"TYPE SELECTED: {build_mode}")
     ret_code = main(build_type)
-    print("INSTALL COMMAND FINISHED WITH CODE %d" % ret_code)
+    print(f"INSTALL COMMAND FINISHED WITH CODE {ret_code}")

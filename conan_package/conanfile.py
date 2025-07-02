@@ -1,114 +1,90 @@
-__author__ = "Karan Kumar"
-
+from conan import ConanFile
+from conan.tools.cmake import CMake, CMakeToolchain, CMakeDeps
+from conan.tools.files import copy
 import os
-import shutil
 
-from conans import ConanFile, CMake, tools
-from pathlib import Path
-
-# Explicitly downloading conan packages and setup build directory.
-# Reference for conanfile.py: https://github.com/conan-io/conan/issues/5948
-class CMSConan(ConanFile):
+class PulsarConan(ConanFile):
     name = "pulsar"
-    version = "3.1.1"
-    license = "<DeepR proprietary license>"
-    author = "<Lalit Gangwar> <lalit.gangwar@equtick.com>"
-    # url = "<Package recipe repository url here, for issues about the package>"
-    # https://docs.conan.io/en/latest/creating_packages/package_repo.html#capturing-the-remote-and-commit-scm
-    # If using '.' as subfolder then 'conan create' will use current project directory as source dir
-    # without copying source to build folder which might take some time.
-    # After subfolder, other fields should be auto in this case. 
-    # Note: For uploading '--force' CLA should be given with upload command.
+    version = "3.7.1"
+    license = "Apache-2.0"
+    author = "DeepR Analytics"
+    description = "Apache Pulsar C++ client library"
+    topics = ("pulsar", "messaging", "pubsub")
+    settings = "os", "compiler", "build_type", "arch"
+    options = {
+        "shared": [False]
+    }
+    default_options = {
+        "shared": False,
+        "boost/*:shared": False,
+        "openssl/*:shared": False,
+        "protobuf/*:shared": False,
+        "zlib/*:shared": False,
+        "curl/*:shared": False
+    }
+    
+    # For SCM, using auto values which will be filled by Conan
     scm = {
-        "type": "git",  # Use "type": "svn", if local repo is managed using SVN
+        "type": "git",
         "subfolder": ".",
         "url": "auto",
         "revision": "auto"
     }
-    description = "Apache Pulsar"
-    topics = ("CMS", "C++")
-    settings = "os", "compiler", "build_type", "arch"
-    options = {
-        "shared": [False]
-        }
     
-    default_options = {
-        "shared": False, 
-        "boost:shared":False,
-        "log4cplus:shared":False,
-        "openssl:shared":False,
-        "protobuf:shared":False,
-        "cryptopp:shared":False
-        }
-    generators = "cmake" #, "cmake_find_package"
-    no_copy_source = True
-
-    # custom vars.
-    _build_dir = "build"
-    _conan_dir = "conan"
-
-    def source(self):
-        pass
-
     def requirements(self):
-        print("<< REQUIREMENTS BEGIN >>")
-        requirements = [
-            "boost/1.80.0",
-            "log4cplus/2.0.4",
-            "nlohmann_json/3.9.1",
-            "openssl/1.1.1k",
-            "protobuf/3.17.1",
-            "cryptopp/8.5.0",
-            "libcurl/7.87.0"
-        ]
-
-        if self.settings.os == "Windows":
-           requirements += ["dlfcn/1.0.0@prod/stable"]
-
-        for deps in requirements:
-            self.requires(deps)
-        print("<< REQUIREMENTS END >>")
-
-    def _configure_cmake(self, cmake_build_type):
-        print("SourceFolder: " + self.source_folder)
-        print("BuildDir: " + self._build_dir)
-        cmake = CMake(self, build_type=cmake_build_type)
-        cmake.configure(build_folder=self._build_dir, source_folder=self.source_folder)
-        return cmake
-
-    def config_options(self):
-        if self.settings.os == "Windows":
-            del self.options.fPIC
-            self.current_system = "windows"
-        elif self.settings.os == "Linux":
-            self.current_system = "unix"
-            # Do some linux configuration stuff here.
-            pass
-
-    def build(self):
-        self.cmake = self._configure_cmake(self.settings.build_type)
-        self.cmake.build()
-
-    def package(self):
-        # Install with cmake and then use conan copy commands to copy headers and libs.
-        self.cmake.install()
-
-        src_install_dir = self._build_dir + "/x64/%s/install" % (self.current_system)
+        # Dependencies from vcpkg.json
+        self.requires("boost/1.83.0")  # Using boost version from vcpkg
+        self.requires("openssl/3.5.0")  # Updated to match vcpkg
+        self.requires("protobuf/3.21.12")  # Updated to match vcpkg
+        self.requires("zlib/1.3.1")  # Updated to match vcpkg
+        self.requires("libcurl/8.12.1")  # Updated to match vcpkg
+        self.requires("snappy/1.1.10")  # Added from vcpkg
+        self.requires("zstd/1.5.5")  # Added from vcpkg
+        self.requires("nlohmann_json/3.9.1")
         
-        print("Source Install Dir: " + src_install_dir)
-        self.copy("*.h", dst="include", src=src_install_dir + "/include")
-        self.copy("*.hpp", dst="include", src=src_install_dir + "/include")
-        # configs = ["Debug", "Release"]
-        configs = [self.settings.build_type]
-        for config in configs:
-            src_build_dir = self._build_dir + "/x64/%s/%s/" % (self.current_system, config)
-            print("Source Build Dir: " + src_build_dir)
-            self.copy("*.lib", dst="lib", src=src_build_dir)
-            self.copy("*.dll", dst="bin", src=src_build_dir)
-            self.copy("*.dylib*", dst="lib", src=src_build_dir)
-            self.copy("*.so", dst="lib", src=src_build_dir)
-            self.copy("*.a", dst="lib", src=src_build_dir)
+        if self.settings.os == "Windows":
+            self.requires("dlfcn-win32/1.4.1")
+    
+    def layout(self):
+        # Define the layout for build, generators, etc.
+        self.folders.source = "."
+        self.folders.build = "build"
+        self.folders.generators = os.path.join("build", "generators")
+    
+    def generate(self):
+        # Generate CMake files
+        deps = CMakeDeps(self)
+        deps.generate()
+        
+        tc = CMakeToolchain(self)
+        # Add any custom CMake variables here
+        tc.variables["BUILD_TESTS"] = "OFF"
+        tc.variables["BUILD_WIRESHARK"] = "OFF"
+        tc.variables["BUILD_PERF_TOOLS"] = "OFF"
+        tc.variables["USE_LOG4CXX"] = "OFF"
+        tc.variables["HAS_SNAPPY"] = "1"  # Enable Snappy compression
+        tc.variables["HAS_ZSTD"] = "1"  # Enable Zstd compression
+        tc.generate()
+    
+    def build(self):
+        cmake = CMake(self)
+        cmake.configure()
+        cmake.build()
+    
+    def package(self):
+        cmake = CMake(self)
+        cmake.install()
+        
+        # Copy headers
+        copy(self, "*.h", src=os.path.join(self.source_folder, "include"), 
+             dst=os.path.join(self.package_folder, "include"))
+        
+        # Copy libraries
+        copy(self, "*.lib", src=self.build_folder, dst=os.path.join(self.package_folder, "lib"), keep_path=False)
+        copy(self, "*.dll", src=self.build_folder, dst=os.path.join(self.package_folder, "bin"), keep_path=False)
+        copy(self, "*.so", src=self.build_folder, dst=os.path.join(self.package_folder, "lib"), keep_path=False)
+        copy(self, "*.dylib", src=self.build_folder, dst=os.path.join(self.package_folder, "lib"), keep_path=False)
+        copy(self, "*.a", src=self.build_folder, dst=os.path.join(self.package_folder, "lib"), keep_path=False)
 
     def package_info(self):
-        self.cpp_info.release.libs = ["pulsar"]
-        self.cpp_info.debug.libs = ["pulsar"]
+        self.cpp_info.libs = ["pulsar"]

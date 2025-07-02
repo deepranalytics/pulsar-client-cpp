@@ -83,6 +83,10 @@ if (BUILD_DYNAMIC_LIB)
     set_property(TARGET pulsarShared PROPERTY OUTPUT_NAME ${LIB_NAME_SHARED})
     set_property(TARGET pulsarShared PROPERTY VERSION ${LIBRARY_VERSION})
     target_link_libraries(pulsarShared PRIVATE ${COMMON_LIBS} ${CMAKE_DL_LIBS})
+    if (WIN32)
+        # Add Windows system libraries required for CURL static linking
+        target_link_libraries(pulsarShared PRIVATE ws2_32 wldap32 advapi32 crypt32)
+    endif()
     target_include_directories(pulsarShared PUBLIC
         ${CMAKE_SOURCE_DIR}
         ${CMAKE_SOURCE_DIR}/include)

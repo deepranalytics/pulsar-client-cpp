@@ -19,27 +19,21 @@
 
 cmake_minimum_required(VERSION 3.13)
 
-option(USE_ASIO "Use Asio instead of Boost.Asio" OFF)
+# Conan 2.0 integration
+if(EXISTS "${CMAKE_BINARY_DIR}/generators/conan_toolchain.cmake")
+    # Using Conan 2.0 - CMakeToolchain
+    cmake_policy(SET CMP0091 NEW)
+    include(${CMAKE_BINARY_DIR}/generators/conan_toolchain.cmake)
+endif()
 
-option(INTEGRATE_VCPKG "Integrate with Vcpkg" OFF)
-if (INTEGRATE_VCPKG)
-    set(USE_ASIO ON)
-    if (NOT CMAKE_TOOLCHAIN_FILE)
-        set(CMAKE_TOOLCHAIN_FILE "${CMAKE_SOURCE_DIR}/vcpkg/scripts/buildsystems/vcpkg.cmake")
-    endif ()
-endif ()
+# We're using Boost.Asio instead of standalone Asio
+option(USE_ASIO "Use standalone Asio instead of Boost.Asio" OFF)
 
 option(BUILD_TESTS "Build tests" ON)
 message(STATUS "BUILD_TESTS:  " ${BUILD_TESTS})
-if (BUILD_TESTS)
-    list(APPEND VCPKG_MANIFEST_FEATURES "tests")
-endif ()
 
 option(BUILD_PERF_TOOLS "Build Pulsar CLI perf producer/consumer" OFF)
 message(STATUS "BUILD_PERF_TOOLS:  " ${BUILD_PERF_TOOLS})
-if (BUILD_PERF_TOOLS)
-    list(APPEND VCPKG_MANIFEST_FEATURES "perf")
-endif ()
 
 add_definitions(-DCMS_MAJOR_VER=5)
 add_definitions(-DCMS_MINOR_VER=0)
@@ -60,13 +54,52 @@ if(EXISTS "${CMAKE_BINARY_DIR}/generators/conan_toolchain.cmake")
     include(${CMAKE_BINARY_DIR}/generators/conan_toolchain.cmake)
     # Find dependencies
     find_package(Boost REQUIRED)
+    # Get Boost include directories and add them to the include path
+    get_target_property(BOOST_INCLUDE_DIRS Boost::boost INTERFACE_INCLUDE_DIRECTORIES)
+    include_directories(${BOOST_INCLUDE_DIRS})
+    message(STATUS "Using Boost include dirs: ${BOOST_INCLUDE_DIRS}")
+    
     find_package(OpenSSL REQUIRED)
+    # Get OpenSSL include directories
+    get_target_property(OPENSSL_INCLUDE_DIRS OpenSSL::SSL INTERFACE_INCLUDE_DIRECTORIES)
+    include_directories(${OPENSSL_INCLUDE_DIRS})
+    message(STATUS "Using OpenSSL include dirs: ${OPENSSL_INCLUDE_DIRS}")
+    
     find_package(Protobuf REQUIRED)
+    # Get Protobuf include directories
+    get_target_property(PROTOBUF_INCLUDE_DIRS protobuf::libprotobuf INTERFACE_INCLUDE_DIRECTORIES)
+    include_directories(${PROTOBUF_INCLUDE_DIRS})
+    message(STATUS "Using Protobuf include dirs: ${PROTOBUF_INCLUDE_DIRS}")
+    
     find_package(ZLIB REQUIRED)
+    # Get ZLIB include directories
+    get_target_property(ZLIB_INCLUDE_DIRS ZLIB::ZLIB INTERFACE_INCLUDE_DIRECTORIES)
+    include_directories(${ZLIB_INCLUDE_DIRS})
+    message(STATUS "Using ZLIB include dirs: ${ZLIB_INCLUDE_DIRS}")
+    
     find_package(CURL REQUIRED)
+    # Get CURL include directories
+    get_target_property(CURL_INCLUDE_DIRS CURL::libcurl INTERFACE_INCLUDE_DIRECTORIES)
+    include_directories(${CURL_INCLUDE_DIRS})
+    message(STATUS "Using CURL include dirs: ${CURL_INCLUDE_DIRS}")
+    
+    find_package(Snappy REQUIRED)
+    # Get Snappy include directories
+    get_target_property(SNAPPY_INCLUDE_DIRS Snappy::snappy INTERFACE_INCLUDE_DIRECTORIES)
+    include_directories(${SNAPPY_INCLUDE_DIRS})
+    message(STATUS "Using Snappy include dirs: ${SNAPPY_INCLUDE_DIRS}")
+    
+    find_package(zstd REQUIRED)
+    # Get zstd include directories
+    get_target_property(ZSTD_INCLUDE_DIRS zstd::libzstd_static INTERFACE_INCLUDE_DIRECTORIES)
+    include_directories(${ZSTD_INCLUDE_DIRS})
+    message(STATUS "Using zstd include dirs: ${ZSTD_INCLUDE_DIRS}")
+    
     find_package(nlohmann_json REQUIRED)
-    find_package(log4cplus REQUIRED)
-    find_package(cryptopp REQUIRED)
+    # Get nlohmann_json include directories
+    get_target_property(JSON_INCLUDE_DIRS nlohmann_json::nlohmann_json INTERFACE_INCLUDE_DIRECTORIES)
+    include_directories(${JSON_INCLUDE_DIRS})
+    message(STATUS "Using nlohmann_json include dirs: ${JSON_INCLUDE_DIRS}")
     if(WIN32)
         find_package(dlfcn-win32 REQUIRED)
     endif()
@@ -129,20 +162,6 @@ endif()
 
 
 
-
-
-
-
-
-
-
-
-set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${PROJECT_SOURCE_DIR}/cmake_modules")
-set(PROTOC_PATH "${CONAN_BIN_DIRS_PROTOBUF}/protoc")
-
-execute_process(COMMAND cat ${PROJECT_SOURCE_DIR}/version.txt OUTPUT_STRIP_TRAILING_WHITESPACE
-            OUTPUT_VARIABLE PULSAR_CLIENT_VERSION)
-message(STATUS "Pulsar Client version: ${PULSAR_CLIENT_VERSION}")
 
 execute_process(COMMAND ${PROJECT_SOURCE_DIR}/build-support/gen-pulsar-version-macro.py OUTPUT_STRIP_TRAILING_WHITESPACE
         OUTPUT_VARIABLE PULSAR_CLIENT_VERSION_MACRO)
@@ -230,48 +249,86 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 add_definitions(-DBUILDING_PULSAR -DBOOST_ALL_NO_LIB -DBOOST_ALLOW_DEPRECATED_HEADERS)
 
+# Add CURL_STATICLIB definition for Windows when linking statically
+if(WIN32 AND NOT BUILD_SHARED_LIBS)
+    add_definitions(-DCURL_STATICLIB)
+endif()
+
 set(AUTOGEN_DIR ${PROJECT_BINARY_DIR}/generated)
 file(MAKE_DIRECTORY ${AUTOGEN_DIR})
 
-if (INTEGRATE_VCPKG)
-    if (NOT CMAKE_CXX_STANDARD)
-        set(CMAKE_CXX_STANDARD 11)
-    endif ()
-    set(CMAKE_C_STANDARD 11)
-    set(Boost_NO_BOOST_CMAKE ON)
-    find_package(Boost REQUIRED)
-    include_directories(${Boost_INCLUDE_DIRS})
-    message("Boost_INCLUDE_DIRS: ${Boost_INCLUDE_DIRS}")
+# Set up protoc path for code generation
+if(EXISTS "${CMAKE_BINARY_DIR}/generators/conan_toolchain.cmake")
+    # When using Conan 2, protobuf::protoc target should be available after find_package(Protobuf)
+    # and Protobuf_PROTOC_EXECUTABLE should be set
+    if(TARGET protobuf::protoc)
+        set(PROTOC_PATH "${Protobuf_PROTOC_EXECUTABLE}")
+        message(STATUS "Using protoc from Conan target: ${PROTOC_PATH}")
+    else()
+        # Fallback to manual search if target not available
+        find_program(PROTOC_PATH protoc)
+        if(NOT PROTOC_PATH)
+            message(FATAL_ERROR "Could not find protoc executable. Please ensure protobuf is properly installed.")
+        endif()
+        message(STATUS "Using protoc (fallback): ${PROTOC_PATH}")
+    endif()
+else()
+    # Fallback to system protoc or previously defined path
+    if(NOT PROTOC_PATH)
+        find_program(PROTOC_PATH protoc)
+        if(NOT PROTOC_PATH)
+            message(FATAL_ERROR "Could not find protoc executable. Please install protobuf or specify PROTOC_PATH.")
+        endif()
+    endif()
+    message(STATUS "Using protoc: ${PROTOC_PATH}")
+endif()
 
-    set(CURL_NO_CURL_CMAKE ON)
-    find_package(CURL REQUIRED)
-    find_package(ZLIB REQUIRED)
-    find_package(OpenSSL REQUIRED)
-    find_package(protobuf CONFIG REQUIRED)
-    find_package(zstd CONFIG REQUIRED)
-    find_package(Snappy CONFIG REQUIRED)
-    set(COMMON_LIBS CURL::libcurl
+# Define common libraries for linking
+if(EXISTS "${CMAKE_BINARY_DIR}/generators/conan_toolchain.cmake")
+    # Using Conan-provided dependencies
+    set(COMMON_LIBS 
+        CURL::libcurl
         ZLIB::ZLIB
         OpenSSL::SSL
         OpenSSL::Crypto
         protobuf::libprotobuf
-        $<IF:$<TARGET_EXISTS:zstd::libzstd_shared>,zstd::libzstd_shared,zstd::libzstd_static>
+        zstd::libzstd_static
         Snappy::snappy
-        )
+        nlohmann_json::nlohmann_json
+    )
+    
+    # We're using Boost.Asio instead of standalone Asio
     if (USE_ASIO)
-        find_package(asio CONFIG REQUIRED)
-        set(COMMON_LIBS ${COMMON_LIBS} asio::asio)
-    endif ()
-    add_definitions(-DHAS_ZSTD -DHAS_SNAPPY)
-    if (MSVC)
-        find_package(dlfcn-win32 CONFIG REQUIRED)
-    endif ()
+        message(FATAL_ERROR "Standalone Asio is not supported in this build. Please set USE_ASIO=OFF to use Boost.Asio instead.")
+    else()
+        # Using Boost.Asio
+        message(STATUS "Using Boost.Asio")
+    endif()
+    
+    # Add Windows-specific libraries
+    if (WIN32)
+        # Add dlfcn-win32 for Windows dynamic library loading
+        find_package(dlfcn-win32 REQUIRED)
+        get_target_property(DLFCN_WIN32_INCLUDE_DIRS dlfcn-win32::dlfcn-win32 INTERFACE_INCLUDE_DIRECTORIES)
+        include_directories(${DLFCN_WIN32_INCLUDE_DIRS})
+        list(APPEND COMMON_LIBS dlfcn-win32::dlfcn-win32)
+        # Add definition to indicate we're using dlfcn-win32
+        add_definitions(-DHAS_DLFCN_WIN32)
+        
+        # Create a variable without dashes for compatibility with legacy code
+        set(DLFCN_WIN32_LIBRARY dlfcn-win32::dlfcn-win32 CACHE STRING "dlfcn-win32 library target" FORCE)
+        message(STATUS "Using dlfcn-win32 from Conan: ${DLFCN_WIN32_INCLUDE_DIRS}")
+    endif()
+    
+    # Add Boost libraries
+    list(APPEND COMMON_LIBS Boost::boost)
     if (BUILD_PERF_TOOLS)
-        find_package(Boost COMPONENTS program_options REQUIRED)
-    endif ()
-else ()
+        list(APPEND COMMON_LIBS Boost::program_options)
+    endif()
+else()
+    # Fallback to legacy find packages if not using Conan
     include(./LegacyFindPackages.cmake)
-endif ()
+endif()
 
 if (USE_ASIO)
     add_definitions(-DUSE_ASIO)

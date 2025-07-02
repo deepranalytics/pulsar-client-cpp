@@ -76,6 +76,7 @@ doxygen/
 
 # generated files
 generated/
+build/
 
 # CMAKE
 .cmake

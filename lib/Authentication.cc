@@ -16,7 +16,13 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-#include <dlfcn.h>
+// Platform-specific dynamic library loading
+#if defined(_WIN32) || defined(_WIN64)
+  #include <dlfcn.h> // dlfcn-win32 compatibility layer
+#else
+  #include <dlfcn.h> // POSIX dynamic loading
+#endif
+
 #include <pulsar/Authentication.h>
 
 #include <boost/algorithm/string.hpp>
