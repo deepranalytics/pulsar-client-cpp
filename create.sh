@@ -1,1 +1,1 @@
-conan create . --name=apache-pulsar --version=3.7.1
+conan create . --name=pulsar --version=3.7.1
