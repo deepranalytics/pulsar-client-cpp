@@ -1,0 +1,45 @@
+name: Windows Release
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Package version'
+        required: false
+        default: '3.7.1'
+        type: string
+
+jobs:
+  Windows-Installer:
+    runs-on: [self-hosted, Windows, conan2]
+
+    steps:
+    - name: Check out repository code
+      uses: actions/checkout@v4
+      
+    - name: Set up environment
+      shell: pwsh
+      run: |
+        echo "Setting up build environment"
+        # Add any environment setup needed here
+        
+    - name: Set version variable
+      shell: pwsh
+      run: |
+        $version = "3.7.1"
+        if ("${{ github.event_name }}" -eq "workflow_dispatch" -and "${{ github.event.inputs.version }}" -ne "") {
+          $version = "${{ github.event.inputs.version }}"
+        }
+        echo "VERSION=$version" >> $env:GITHUB_ENV
+
+    - name: Build with direct conan command
+      shell: pwsh
+      run: |
+        echo "Building with Conan command"
+        conan create . --name=pulsar --version=$env:VERSION
+
+
